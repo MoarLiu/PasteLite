@@ -1,0 +1,12 @@
+.DS_Store
+.build/
+.build-*/
+.build-main/
+.build-run/
+dist/
+outputs/
+DerivedData/
+*.xcuserstate
+*.xcworkspace/xcuserdata/
+*.xcodeproj/xcuserdata/
+work/
