@@ -2,13 +2,25 @@ import AppKit
 import Foundation
 import os
 
+enum HistoryStoreMutationResult: Equatable {
+    case success
+    case failure(String)
+
+    var isSuccess: Bool {
+        if case .success = self {
+            return true
+        }
+        return false
+    }
+}
+
 @MainActor
 protocol HistoryStore: AnyObject, ObservableObject {
     var items: [ClipboardItem] { get }
     func loadRecentItems(limit: Int)
-    func add(_ item: ClipboardItem)
-    func remove(id: ClipboardItem.ID)
-    func clear()
+    @discardableResult func add(_ item: ClipboardItem) -> HistoryStoreMutationResult
+    @discardableResult func remove(id: ClipboardItem.ID) -> HistoryStoreMutationResult
+    @discardableResult func clear() -> HistoryStoreMutationResult
 }
 
 @MainActor
@@ -53,10 +65,11 @@ final class SQLiteHistoryStore: HistoryStore {
         }
     }
 
-    func add(_ item: ClipboardItem) {
+    @discardableResult
+    func add(_ item: ClipboardItem) -> HistoryStoreMutationResult {
         guard let database else {
             addInMemory(item)
-            return
+            return .success
         }
 
         do {
@@ -66,16 +79,18 @@ final class SQLiteHistoryStore: HistoryStore {
                 try pruneHistory(database: database)
             }
             addInMemory(item)
+            return .success
         } catch {
             Self.logger.error("PasteLite could not persist clipboard item: \(error.localizedDescription, privacy: .public)")
-            addInMemory(item)
+            return .failure("Could not save this clipboard item to history.")
         }
     }
 
-    func remove(id: ClipboardItem.ID) {
+    @discardableResult
+    func remove(id: ClipboardItem.ID) -> HistoryStoreMutationResult {
         guard let database else {
             items.removeAll { $0.id == id }
-            return
+            return .success
         }
 
         do {
@@ -83,24 +98,28 @@ final class SQLiteHistoryStore: HistoryStore {
             try statement.bind(id.uuidString, at: 1)
             try statement.run()
             items.removeAll { $0.id == id }
+            return .success
         } catch {
             Self.logger.error("PasteLite could not remove clipboard item: \(error.localizedDescription, privacy: .public)")
-            items.removeAll { $0.id == id }
+            return .failure("Could not remove this clipboard item from history.")
         }
     }
 
-    func clear() {
+    @discardableResult
+    func clear() -> HistoryStoreMutationResult {
         guard let database else {
             items.removeAll()
-            return
+            return .success
         }
 
         do {
             try database.execute("DELETE FROM history_items;")
+            items.removeAll()
+            return .success
         } catch {
             Self.logger.error("PasteLite could not clear clipboard history: \(error.localizedDescription, privacy: .public)")
+            return .failure("Could not clear clipboard history.")
         }
-        items.removeAll()
     }
 
     private static func migrate(_ database: SQLiteDatabase) throws {

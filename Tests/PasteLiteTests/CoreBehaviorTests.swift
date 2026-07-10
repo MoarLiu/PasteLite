@@ -35,6 +35,11 @@ func updateCheckerReportsMissingFeed() async throws {
     #expect(result == .notConfigured)
 }
 
+@Test
+func appInfoUsesGitHubReleaseFeedByDefault() {
+    #expect(AppInfo.updateCheckURL == AppInfo.defaultUpdateCheckURL)
+}
+
 @MainActor
 @Test
 func hotkeySettingsPersistSelectedChoice() throws {
@@ -107,6 +112,20 @@ func hotkeyShortcutDisplaysSymbolTitle() {
     )
 
     #expect(shortcut.displayTitle == "⌃⌥A")
+}
+
+@Test
+func clipboardContentHashIncludesItemStructure() {
+    let first = ClipboardAsset(index: 0, pasteboardType: .string, data: Data("same".utf8))
+    let second = ClipboardAsset(index: 1, pasteboardType: .string, data: Data("same".utf8))
+    let regroupedSecond = ClipboardAsset(index: 2, pasteboardType: .string, data: Data("same".utf8))
+
+    let originalHash = ClipboardContentHasher.hash(assets: [first, second])
+    let reorderedHash = ClipboardContentHasher.hash(assets: [second, first])
+    let regroupedHash = ClipboardContentHasher.hash(assets: [first, regroupedSecond])
+
+    #expect(originalHash == reorderedHash)
+    #expect(originalHash != regroupedHash)
 }
 
 @MainActor
@@ -257,6 +276,60 @@ func sqliteStoreRemoveDeletesPersistedItem() throws {
 
 @MainActor
 @Test
+func sqliteStoreKeepsMemoryStateWhenInsertFails() throws {
+    let (databaseURL, directory) = makeDatabaseURL()
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let store = SQLiteHistoryStore(databaseURL: databaseURL, limit: 10)
+    let first = makeItem(title: "First", content: "first", contentHash: "first-hash")
+    store.add(first)
+
+    let adminDatabase = try SQLiteDatabase(url: databaseURL)
+    try adminDatabase.execute(
+        """
+        CREATE TRIGGER reject_history_insert
+        BEFORE INSERT ON history_items
+        BEGIN
+            SELECT RAISE(ABORT, 'blocked');
+        END;
+        """
+    )
+
+    let result = store.add(makeItem(title: "Second", content: "second", contentHash: "second-hash"))
+
+    #expect(result == .failure("Could not save this clipboard item to history."))
+    #expect(store.items.map(\.title) == ["First"])
+}
+
+@MainActor
+@Test
+func sqliteStoreKeepsMemoryStateWhenDeleteFails() throws {
+    let (databaseURL, directory) = makeDatabaseURL()
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let store = SQLiteHistoryStore(databaseURL: databaseURL, limit: 10)
+    let item = makeItem(title: "Saved", content: "saved", contentHash: "saved-hash")
+    store.add(item)
+
+    let adminDatabase = try SQLiteDatabase(url: databaseURL)
+    try adminDatabase.execute(
+        """
+        CREATE TRIGGER reject_history_delete
+        BEFORE DELETE ON history_items
+        BEGIN
+            SELECT RAISE(ABORT, 'blocked');
+        END;
+        """
+    )
+
+    let removeResult = store.remove(id: item.id)
+    let clearResult = store.clear()
+
+    #expect(removeResult == .failure("Could not remove this clipboard item from history."))
+    #expect(clearResult == .failure("Could not clear clipboard history."))
+    #expect(store.items.map(\.title) == ["Saved"])
+}
+
+@MainActor
+@Test
 func selfWriteChangeCountIsConsumedOnce() {
     let pasteboard = NSPasteboard(name: NSPasteboard.Name("PasteLiteTests.\(UUID().uuidString)"))
     defer { pasteboard.releaseGlobally() }
@@ -269,6 +342,26 @@ func selfWriteChangeCountIsConsumedOnce() {
 
     #expect(PasteLitePasteboardWriteGuard.consumeIfSelfWrite(changeCount: changeCount))
     #expect(!PasteLitePasteboardWriteGuard.consumeIfSelfWrite(changeCount: changeCount))
+}
+
+@MainActor
+@Test
+func selfWriteGuardKeepsOnlyLatestChangeCount() {
+    let pasteboard = NSPasteboard(name: NSPasteboard.Name("PasteLiteTests.\(UUID().uuidString)"))
+    defer { pasteboard.releaseGlobally() }
+
+    pasteboard.clearContents()
+    #expect(pasteboard.setString("first", forType: .string))
+    PasteLitePasteboardWriteGuard.markSelfWrite(on: pasteboard)
+    let firstChangeCount = pasteboard.changeCount
+
+    pasteboard.clearContents()
+    #expect(pasteboard.setString("second", forType: .string))
+    PasteLitePasteboardWriteGuard.markSelfWrite(on: pasteboard)
+    let secondChangeCount = pasteboard.changeCount
+
+    #expect(!PasteLitePasteboardWriteGuard.consumeIfSelfWrite(changeCount: firstChangeCount))
+    #expect(PasteLitePasteboardWriteGuard.consumeIfSelfWrite(changeCount: secondChangeCount))
 }
 
 @MainActor

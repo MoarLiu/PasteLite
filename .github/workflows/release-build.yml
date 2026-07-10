@@ -1,0 +1,79 @@
+name: Build release artifacts
+
+on:
+  push:
+    branches:
+      - "codex/release-*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-15-intel
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show toolchain
+        run: |
+          xcode-select -p
+          swift --version
+
+      - name: Run tests
+        run: ./script/run_checks.sh
+
+      - name: Build both architectures
+        run: ./script/package_release.sh
+
+      - name: Verify packaged applications
+        run: |
+          set -euo pipefail
+
+          for arch in arm64 x86_64; do
+            app="dist/release/stage-$arch/PasteLite.app"
+            dmg="dist/release/PasteLite-0.1.1-macos-$arch.dmg"
+            mount_dir="$RUNNER_TEMP/PasteLite-$arch"
+
+            test "$(lipo -archs "$app/Contents/MacOS/PasteLite")" = "$arch"
+            test "$(plutil -extract CFBundleShortVersionString raw "$app/Contents/Info.plist")" = "0.1.1"
+            test "$(plutil -extract CFBundleVersion raw "$app/Contents/Info.plist")" = "11"
+            test "$(plutil -extract PasteLiteUpdateCheckURL raw "$app/Contents/Info.plist")" = \
+              "https://api.github.com/repos/MoarLiu/PasteLite/releases/latest"
+            codesign --verify --deep --strict "$app"
+
+            if [[ "$arch" == "x86_64" ]]; then
+              "$app/Contents/MacOS/PasteLite" &
+              app_pid=$!
+              sleep 2
+              kill -0 "$app_pid"
+              kill "$app_pid"
+              wait "$app_pid" || true
+            fi
+
+            mkdir -p "$mount_dir"
+            hdiutil attach -nobrowse -readonly -mountpoint "$mount_dir" "$dmg" >/dev/null
+            mounted_app="$mount_dir/PasteLite.app"
+            test -d "$mounted_app"
+            test "$(lipo -archs "$mounted_app/Contents/MacOS/PasteLite")" = "$arch"
+            codesign --verify --deep --strict "$mounted_app"
+            hdiutil detach "$mount_dir" >/dev/null
+          done
+
+          cd dist/release
+          shasum -a 256 -c PasteLite-0.1.1-macos-arm64.app.zip.sha256
+          shasum -a 256 -c PasteLite-0.1.1-macos-arm64.dmg.sha256
+          shasum -a 256 -c PasteLite-0.1.1-macos-x86_64.app.zip.sha256
+          shasum -a 256 -c PasteLite-0.1.1-macos-x86_64.dmg.sha256
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PasteLite-0.1.1-release
+          path: |
+            dist/release/*.app.zip
+            dist/release/*.dmg
+            dist/release/*.sha256
+          if-no-files-found: error
+          retention-days: 7

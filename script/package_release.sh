@@ -2,8 +2,8 @@
 set -euo pipefail
 
 APP_NAME="PasteLite"
-APP_VERSION="${APP_VERSION:-0.1.0}"
-APP_BUILD="${APP_BUILD:-1}"
+APP_VERSION="${APP_VERSION:-0.1.1}"
+APP_BUILD="${APP_BUILD:-11}"
 CONFIGURATION="${CONFIGURATION:-release}"
 ARCHES="${ARCHES:-arm64 x86_64}"
 
@@ -80,4 +80,3 @@ for arch in $ARCHES; do
   echo "$zip_path"
   echo "$dmg_path"
 done
-

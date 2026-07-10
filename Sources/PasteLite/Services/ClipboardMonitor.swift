@@ -65,7 +65,7 @@ final class ClipboardMonitor {
             kind: kind,
             sourceAppName: sourceApp?.localizedName,
             sourceBundleIdentifier: sourceApp?.bundleIdentifier,
-            contentHash: hash(assets: itemAssets),
+            contentHash: ClipboardContentHasher.hash(assets: itemAssets),
             previewText: previewText,
             assets: itemAssets
         )
@@ -168,12 +168,35 @@ final class ClipboardMonitor {
         return String(data: data, encoding: .utf8) ?? ""
     }
 
-    private func hash(assets: [ClipboardAsset]) -> String {
-        var data = Data()
-        for asset in assets {
-            data.append(Data(asset.pasteboardType.rawValue.utf8))
-            data.append(asset.data)
+}
+
+enum ClipboardContentHasher {
+    static func hash(assets: [ClipboardAsset]) -> String {
+        let orderedAssets = assets.sorted {
+            if $0.index == $1.index {
+                return $0.pasteboardType.rawValue < $1.pasteboardType.rawValue
+            }
+            return $0.index < $1.index
         }
-        return SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+
+        var hasher = SHA256()
+        for asset in orderedAssets {
+            update(UInt64(asset.index), hasher: &hasher)
+
+            let typeData = Data(asset.pasteboardType.rawValue.utf8)
+            update(UInt64(typeData.count), hasher: &hasher)
+            hasher.update(data: typeData)
+
+            update(UInt64(asset.data.count), hasher: &hasher)
+            hasher.update(data: asset.data)
+        }
+
+        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
+    }
+
+    private static func update(_ value: UInt64, hasher: inout SHA256) {
+        var encodedValue = value.bigEndian
+        let data = withUnsafeBytes(of: &encodedValue) { Data($0) }
+        hasher.update(data: data)
     }
 }

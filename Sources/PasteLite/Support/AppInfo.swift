@@ -1,8 +1,9 @@
 import Foundation
 
 enum AppInfo {
-    static let fallbackVersion = "0.1.0"
-    static let fallbackBuild = "1"
+    static let fallbackVersion = "0.1.1"
+    static let fallbackBuild = "11"
+    static let defaultUpdateCheckURL = URL(string: "https://api.github.com/repos/MoarLiu/PasteLite/releases/latest")
 
     static var version: String {
         bundleString(for: "CFBundleShortVersionString") ?? fallbackVersion
@@ -17,9 +18,10 @@ enum AppInfo {
     }
 
     static var updateCheckURL: URL? {
-        guard let rawValue = bundleString(for: "PasteLiteUpdateCheckURL"),
-              !rawValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            return nil
+        guard let rawValue = bundleString(for: "PasteLiteUpdateCheckURL")?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+              !rawValue.isEmpty else {
+            return defaultUpdateCheckURL
         }
         return URL(string: rawValue)
     }

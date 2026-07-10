@@ -97,13 +97,21 @@ final class HistoryPanelController: NSWindowController {
     }
 
     private func remove(_ item: ClipboardItem) {
-        historyStore.remove(id: item.id)
-        appState.showStatus("Removed from history.")
+        switch historyStore.remove(id: item.id) {
+        case .success:
+            appState.showStatus("Removed from history.")
+        case let .failure(message):
+            appState.showStatus(message)
+        }
     }
 
     private func clearHistory() {
-        historyStore.clear()
-        appState.showStatus("Clipboard history cleared.")
+        switch historyStore.clear() {
+        case .success:
+            appState.showStatus("Clipboard history cleared.")
+        case let .failure(message):
+            appState.showStatus(message)
+        }
     }
 
     private func confirmAndClearHistory() {
