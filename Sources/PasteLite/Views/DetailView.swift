@@ -3,6 +3,7 @@ import SwiftUI
 
 struct DetailView: View {
     let item: ClipboardItem?
+    @ObservedObject var historyStore: SQLiteHistoryStore
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -21,7 +22,7 @@ struct DetailView: View {
             case .color:
                 ColorPreview(item: item)
             case .image:
-                ImagePreview(item: item)
+                ImagePreview(item: item, historyStore: historyStore)
             case .file, .link, .text:
                 TextPreview(item: item)
             }
@@ -117,17 +118,11 @@ private struct ColorPreview: View {
 
 private struct ImagePreview: View {
     let item: ClipboardItem
+    @ObservedObject var historyStore: SQLiteHistoryStore
 
     var body: some View {
-        if let data = item.assets.first(where: { NSPasteboard.PasteboardType.pasteLiteImageTypes.contains($0.pasteboardType) })?.data,
-           let image = NSImage(data: data) {
-            Image(nsImage: image)
-                .resizable()
-                .scaledToFit()
-                .padding(24)
-        } else {
-            EmptyDetailView()
-        }
+        ClipboardImageView(item: item, historyStore: historyStore, maxPixelSize: 1600)
+            .padding(24)
     }
 }
 

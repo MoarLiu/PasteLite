@@ -34,12 +34,12 @@ jobs:
 
           for arch in arm64 x86_64; do
             app="dist/release/stage-$arch/PasteLite.app"
-            dmg="dist/release/PasteLite-0.1.1-macos-$arch.dmg"
+            dmg="dist/release/PasteLite-0.2.0-macos-$arch.dmg"
             mount_dir="$RUNNER_TEMP/PasteLite-$arch"
 
             test "$(lipo -archs "$app/Contents/MacOS/PasteLite")" = "$arch"
-            test "$(plutil -extract CFBundleShortVersionString raw "$app/Contents/Info.plist")" = "0.1.1"
-            test "$(plutil -extract CFBundleVersion raw "$app/Contents/Info.plist")" = "11"
+            test "$(plutil -extract CFBundleShortVersionString raw "$app/Contents/Info.plist")" = "0.2.0"
+            test "$(plutil -extract CFBundleVersion raw "$app/Contents/Info.plist")" = "20"
             test "$(plutil -extract PasteLiteUpdateCheckURL raw "$app/Contents/Info.plist")" = \
               "https://api.github.com/repos/MoarLiu/PasteLite/releases/latest"
             codesign --verify --deep --strict "$app"
@@ -63,14 +63,14 @@ jobs:
           done
 
           cd dist/release
-          shasum -a 256 -c PasteLite-0.1.1-macos-arm64.app.zip.sha256
-          shasum -a 256 -c PasteLite-0.1.1-macos-arm64.dmg.sha256
-          shasum -a 256 -c PasteLite-0.1.1-macos-x86_64.app.zip.sha256
-          shasum -a 256 -c PasteLite-0.1.1-macos-x86_64.dmg.sha256
+          shasum -a 256 -c PasteLite-0.2.0-macos-arm64.app.zip.sha256
+          shasum -a 256 -c PasteLite-0.2.0-macos-arm64.dmg.sha256
+          shasum -a 256 -c PasteLite-0.2.0-macos-x86_64.app.zip.sha256
+          shasum -a 256 -c PasteLite-0.2.0-macos-x86_64.dmg.sha256
 
       - uses: actions/upload-artifact@v4
         with:
-          name: PasteLite-0.1.1-release
+          name: PasteLite-0.2.0-release
           path: |
             dist/release/*.app.zip
             dist/release/*.dmg

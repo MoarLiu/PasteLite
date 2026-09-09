@@ -1,7 +1,7 @@
 import AppKit
 import Foundation
 
-enum ClipboardKind: String, CaseIterable, Codable, Identifiable {
+enum ClipboardKind: String, CaseIterable, Codable, Identifiable, Sendable {
     case text
     case link
     case color
@@ -43,14 +43,14 @@ enum HistoryFilter: String, CaseIterable, Identifiable {
     }
 }
 
-struct ClipboardAsset: Identifiable, Hashable {
+struct ClipboardAsset: Identifiable, Hashable, Sendable {
     let id = UUID()
     var index: Int
     var pasteboardType: NSPasteboard.PasteboardType
     var data: Data
 }
 
-struct ClipboardItem: Identifiable, Hashable {
+struct ClipboardItem: Identifiable, Hashable, Sendable {
     let id: UUID
     var title: String
     var kind: ClipboardKind
@@ -60,6 +60,7 @@ struct ClipboardItem: Identifiable, Hashable {
     var contentHash: String
     var previewText: String
     var assets: [ClipboardAsset]
+    var hasLoadedAssets: Bool
 
     init(
         id: UUID = UUID(),
@@ -70,7 +71,8 @@ struct ClipboardItem: Identifiable, Hashable {
         copiedAt: Date = Date(),
         contentHash: String,
         previewText: String,
-        assets: [ClipboardAsset]
+        assets: [ClipboardAsset],
+        hasLoadedAssets: Bool = true
     ) {
         self.id = id
         self.title = title
@@ -81,5 +83,17 @@ struct ClipboardItem: Identifiable, Hashable {
         self.contentHash = contentHash
         self.previewText = previewText
         self.assets = assets
+        self.hasLoadedAssets = hasLoadedAssets
+    }
+
+    var assetByteCount: Int {
+        assets.reduce(0) { $0 + $1.data.count }
+    }
+
+    var metadataOnly: ClipboardItem {
+        var item = self
+        item.assets = []
+        item.hasLoadedAssets = false
+        return item
     }
 }

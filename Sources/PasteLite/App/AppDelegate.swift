@@ -29,7 +29,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
 
         self.panelController = panelController
-        self.clipboardMonitor = ClipboardMonitor(historyStore: historyStore)
+        self.clipboardMonitor = ClipboardMonitor(historyStore: historyStore) { [weak appState = self.appState] message in
+            appState?.showStatus(message)
+        }
         self.hotkeyManager = HotkeyManager { [weak panelController] in
             panelController?.toggle()
         }

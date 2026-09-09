@@ -4,6 +4,7 @@ import SwiftUI
 struct HistoryRowView: View {
     let item: ClipboardItem
     let isSelected: Bool
+    @ObservedObject var historyStore: SQLiteHistoryStore
 
     var body: some View {
         HStack(spacing: 9) {
@@ -24,11 +25,8 @@ struct HistoryRowView: View {
 
     @ViewBuilder
     private var itemIcon: some View {
-        if item.kind == .image,
-           let image = thumbnailImage {
-            Image(nsImage: image)
-                .resizable()
-                .scaledToFill()
+        if item.kind == .image {
+            ClipboardImageView(item: item, historyStore: historyStore, maxPixelSize: 64, contentMode: .fill)
                 .frame(width: 22, height: 22)
                 .clipShape(RoundedRectangle(cornerRadius: 2, style: .continuous))
         } else {
@@ -69,17 +67,7 @@ struct HistoryRowView: View {
 
     private var rowTitle: String {
         let title = item.title.trimmingCharacters(in: .whitespacesAndNewlines)
-        if item.kind == .image,
-           let image = thumbnailImage {
-            return "Image (\(Int(image.size.width))×\(Int(image.size.height)))"
-        }
         return title.isEmpty ? item.kind.title : title
     }
 
-    private var thumbnailImage: NSImage? {
-        guard let data = item.assets.first(where: { NSPasteboard.PasteboardType.pasteLiteImageTypes.contains($0.pasteboardType) })?.data else {
-            return nil
-        }
-        return NSImage(data: data)
-    }
 }

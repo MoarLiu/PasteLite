@@ -102,7 +102,7 @@ final class SQLiteStatement {
 
     func bind(_ value: String, at index: Int32) throws {
         let result = value.withCString {
-            sqlite3_bind_text(statement, index, $0, -1, Self.transientDestructor)
+            sqlite3_bind_text(statement, index, $0, Int32(value.utf8.count), Self.transientDestructor)
         }
         try checkBind(result)
     }
@@ -160,7 +160,8 @@ final class SQLiteStatement {
 
     func columnString(at index: Int32) -> String? {
         guard let rawText = sqlite3_column_text(statement, index) else { return nil }
-        return String(cString: UnsafeRawPointer(rawText).assumingMemoryBound(to: CChar.self))
+        let byteCount = Int(sqlite3_column_bytes(statement, index))
+        return String(decoding: UnsafeBufferPointer(start: rawText, count: byteCount), as: UTF8.self)
     }
 
     func columnInt64(at index: Int32) -> Int64 {

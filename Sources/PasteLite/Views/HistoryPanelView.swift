@@ -27,11 +27,19 @@ struct HistoryPanelView: View {
     var body: some View {
         VStack(spacing: 0) {
             toolbar
+            if let message = historyStore.errorMessage ?? historyStore.storageWarning {
+                Label(message, systemImage: "exclamationmark.triangle")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 20)
+                    .padding(.bottom, 8)
+            }
             Divider()
             HStack(spacing: 0) {
                 list
                 Divider()
-                DetailView(item: selectedItem)
+                DetailView(item: selectedItem, historyStore: historyStore)
             }
             Divider()
             footer
@@ -95,9 +103,11 @@ struct HistoryPanelView: View {
     }
 
     private var list: some View {
-        VStack(alignment: .leading, spacing: 0) {
+        let displayedSections = sections
+        let selectedID = selectedItem?.id
+        return VStack(alignment: .leading, spacing: 0) {
             HStack {
-                Text(filteredItems.isEmpty ? "History" : sections.first?.title ?? "History")
+                Text(filteredItems.isEmpty ? "History" : displayedSections.first?.title ?? "History")
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(.secondary)
                 Spacer()
@@ -106,23 +116,26 @@ struct HistoryPanelView: View {
             .padding(.top, 10)
             .padding(.bottom, 6)
 
-            if filteredItems.isEmpty {
+            if historyStore.isLoading {
+                ProgressView("Loading history…")
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if filteredItems.isEmpty {
                 emptyList
             } else {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 4) {
-                        ForEach(sections) { section in
-                            VStack(alignment: .leading, spacing: 4) {
-                                if section.id != sections.first?.id {
+                        ForEach(displayedSections) { section in
+                            Section {
+                                ForEach(section.items) { item in
+                                    row(for: item, selectedID: selectedID)
+                                }
+                            } header: {
+                                if section.id != displayedSections.first?.id {
                                     Text(section.title)
                                         .font(.system(size: 11, weight: .semibold))
                                         .foregroundStyle(.secondary)
                                         .padding(.horizontal, 8)
                                         .padding(.top, 8)
-                                }
-
-                                ForEach(section.items) { item in
-                                    row(for: item)
                                 }
                             }
                         }
@@ -151,13 +164,15 @@ struct HistoryPanelView: View {
         .padding(24)
     }
 
-    private func row(for item: ClipboardItem) -> some View {
+    private func row(for item: ClipboardItem, selectedID: ClipboardItem.ID?) -> some View {
         HistoryRowView(
             item: item,
-            isSelected: selectedItem?.id == item.id
+            isSelected: selectedID == item.id,
+            historyStore: historyStore
         )
         .contentShape(Rectangle())
         .onTapGesture {
+            searchFocused = false
             appState.selectedItemID = item.id
         }
         .onTapGesture(count: 2) {
@@ -188,7 +203,14 @@ struct HistoryPanelView: View {
 
     private var footer: some View {
         HStack(spacing: 10) {
-            if let statusMessage = appState.statusMessage {
+            if appState.isPerformingClipboardAction {
+                ProgressView()
+                    .controlSize(.small)
+                Text("Preparing clipboard item…")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            } else if let statusMessage = appState.statusMessage {
                 Label(statusMessage, systemImage: "info.circle")
                     .font(.system(size: 12, weight: .medium))
                     .foregroundStyle(.secondary)
@@ -214,7 +236,7 @@ struct HistoryPanelView: View {
             footerActionButton(
                 title: pasteTitle,
                 systemImage: "arrow.down.doc",
-                isDisabled: selectedItem == nil
+                isDisabled: selectedItem == nil || appState.isPerformingClipboardAction
             ) {
                 if let selectedItem {
                     onPaste(selectedItem)
@@ -228,7 +250,7 @@ struct HistoryPanelView: View {
                 title: "Copy",
                 systemImage: "doc.on.doc",
                 shortcut: "↵",
-                isDisabled: selectedItem == nil
+                isDisabled: selectedItem == nil || appState.isPerformingClipboardAction
             ) {
                 if let selectedItem {
                     onCopy(selectedItem)
@@ -239,7 +261,7 @@ struct HistoryPanelView: View {
                 title: "Delete",
                 systemImage: "trash",
                 isDestructive: true,
-                isDisabled: selectedItem == nil
+                isDisabled: selectedItem == nil || appState.isPerformingClipboardAction
             ) {
                 if let selectedItem {
                     onRemove(selectedItem)
@@ -250,7 +272,7 @@ struct HistoryPanelView: View {
                 title: "Clear All",
                 systemImage: "trash.slash",
                 isDestructive: true,
-                isDisabled: historyStore.items.isEmpty
+                isDisabled: historyStore.items.isEmpty || appState.isPerformingClipboardAction
             ) {
                 onClear()
             }
@@ -261,7 +283,7 @@ struct HistoryPanelView: View {
     }
 
     private var pasteTitle: String {
-        if let appName = selectedItem?.sourceAppName, !appName.isEmpty {
+        if let appName = appState.pasteTargetName, !appName.isEmpty {
             return "Paste to \(appName)"
         }
         return "Paste"

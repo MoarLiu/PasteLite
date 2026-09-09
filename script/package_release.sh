@@ -2,14 +2,15 @@
 set -euo pipefail
 
 APP_NAME="PasteLite"
-APP_VERSION="${APP_VERSION:-0.1.1}"
-APP_BUILD="${APP_BUILD:-11}"
+APP_VERSION="${APP_VERSION:-0.2.0}"
+APP_BUILD="${APP_BUILD:-20}"
 CONFIGURATION="${CONFIGURATION:-release}"
 ARCHES="${ARCHES:-arm64 x86_64}"
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-DIST_DIR="$ROOT_DIR/dist"
+DIST_DIR="${DIST_DIR:-$ROOT_DIR/dist}"
 RELEASE_DIR="$DIST_DIR/release"
+SWIFT_BUILD_SCRATCH_BASE="${SWIFT_BUILD_SCRATCH_BASE:-$ROOT_DIR/.build-release}"
 
 if [[ -z "${DEVELOPER_DIR:-}" && -d "/Applications/Xcode.app/Contents/Developer" ]]; then
   export DEVELOPER_DIR="/Applications/Xcode.app/Contents/Developer"
@@ -50,7 +51,8 @@ for arch in $ARCHES; do
 
   echo "==> Building $APP_NAME $APP_VERSION ($APP_BUILD) for $arch"
   SWIFT_BUILD_TRIPLE="$triple" \
-    SWIFT_BUILD_SCRATCH_PATH="$ROOT_DIR/.build-release-$arch" \
+    SWIFT_BUILD_SCRATCH_PATH="$SWIFT_BUILD_SCRATCH_BASE-$arch" \
+    DIST_DIR="$DIST_DIR" \
     CONFIGURATION="$CONFIGURATION" \
     APP_VERSION="$APP_VERSION" \
     APP_BUILD="$APP_BUILD" \

@@ -8,6 +8,8 @@ final class HistoryPanelController: NSWindowController {
     private let pasteService: PasteService
     private var previousApp: NSRunningApplication?
     private var isOrderingOut = false
+    private(set) var clipboardActionTask: Task<Void, Never>?
+    private var clipboardActionID: UUID?
 
     private var currentItems: [ClipboardItem] {
         appState.filteredItems(in: historyStore.items)
@@ -36,7 +38,7 @@ final class HistoryPanelController: NSWindowController {
                 appState: appState,
                 historyStore: historyStore,
                 onCopy: { [weak self] item in
-                    _ = self?.copyToClipboard(item)
+                    self?.copyToClipboard(item)
                 },
                 onPaste: { [weak self] item in
                     self?.paste(item)
@@ -68,49 +70,102 @@ final class HistoryPanelController: NSWindowController {
 
     override func close() {
         guard !isOrderingOut else { return }
+        cancelClipboardAction()
+        hidePanel()
+    }
+
+    private func hidePanel() {
+        guard !isOrderingOut else { return }
         isOrderingOut = true
         window?.orderOut(nil)
         isOrderingOut = false
     }
 
     private func show(anchor: NSView?) {
-        previousApp = NSWorkspace.shared.frontmostApplication
+        cancelClipboardAction()
+        let frontmostApp = NSWorkspace.shared.frontmostApplication
+        previousApp = frontmostApp?.processIdentifier == ProcessInfo.processInfo.processIdentifier ? nil : frontmostApp
+        appState.pasteTargetName = previousApp?.localizedName
         appState.prepareForPresentation()
         position(anchor: anchor)
         window?.orderFrontRegardless()
         window?.makeKey()
     }
 
-    private func copyToClipboard(_ item: ClipboardItem) -> PasteServiceResult {
-        let result = pasteService.copyToClipboard(item)
-        appState.apply(result, successMessage: "Copied to clipboard.")
-        return result
+    private func cancelClipboardAction() {
+        clipboardActionTask?.cancel()
+        clipboardActionTask = nil
+        clipboardActionID = nil
+        appState.isPerformingClipboardAction = false
+    }
+
+    private func beginClipboardAction() -> UUID {
+        cancelClipboardAction()
+        let id = UUID()
+        clipboardActionID = id
+        appState.isPerformingClipboardAction = true
+        return id
+    }
+
+    private func finishClipboardAction(id: UUID) -> Bool {
+        guard clipboardActionID == id, !Task.isCancelled else { return false }
+        clipboardActionTask = nil
+        clipboardActionID = nil
+        appState.isPerformingClipboardAction = false
+        return true
+    }
+
+    private func copyToClipboard(_ item: ClipboardItem, dismissOnSuccess: Bool = false) {
+        let id = beginClipboardAction()
+        clipboardActionTask = Task { [weak self] in
+            guard let self else { return }
+            let result = await self.pasteService.copyToClipboard(item)
+            guard self.finishClipboardAction(id: id) else { return }
+            self.appState.apply(result, successMessage: "Copied to clipboard.")
+            if result.isSuccess, dismissOnSuccess { self.hidePanel() }
+        }
     }
 
     private func paste(_ item: ClipboardItem) {
-        let result = pasteService.paste(item, into: previousApp)
-        guard result.isSuccess else {
-            appState.apply(result, successMessage: "")
-            return
+        let id = beginClipboardAction()
+        let target = previousApp
+        clipboardActionTask = Task { [weak self] in
+            guard let self else { return }
+            let result = await self.pasteService.paste(item, into: target) { [weak self] in
+                self?.hidePanel()
+            }
+            guard self.finishClipboardAction(id: id) else { return }
+            if !result.isSuccess {
+                self.appState.apply(result, successMessage: "")
+                self.window?.orderFrontRegardless()
+                self.window?.makeKey()
+            }
         }
-        close()
     }
 
     private func remove(_ item: ClipboardItem) {
-        switch historyStore.remove(id: item.id) {
-        case .success:
-            appState.showStatus("Removed from history.")
-        case let .failure(message):
-            appState.showStatus(message)
+        cancelClipboardAction()
+        Task { [weak self] in
+            guard let self else { return }
+            switch await self.historyStore.remove(id: item.id) {
+            case .success:
+                self.appState.showStatus("Removed from history.")
+            case let .failure(message):
+                self.appState.showStatus(message)
+            }
         }
     }
 
     private func clearHistory() {
-        switch historyStore.clear() {
-        case .success:
-            appState.showStatus("Clipboard history cleared.")
-        case let .failure(message):
-            appState.showStatus(message)
+        cancelClipboardAction()
+        Task { [weak self] in
+            guard let self else { return }
+            switch await self.historyStore.clear() {
+            case .success:
+                self.appState.showStatus("Clipboard history cleared.")
+            case let .failure(message):
+                self.appState.showStatus(message)
+            }
         }
     }
 
@@ -153,7 +208,11 @@ final class HistoryPanelController: NSWindowController {
         panel.standardWindowButton(.closeButton)?.isHidden = true
         panel.standardWindowButton(.miniaturizeButton)?.isHidden = true
         panel.standardWindowButton(.zoomButton)?.isHidden = true
-        panel.onResignKey = { [weak self] in self?.close() }
+        panel.onResignKey = { [weak self] in
+            guard let self, self.window?.isVisible == true,
+                  self.window?.attachedSheet == nil else { return }
+            self.close()
+        }
         panel.onCancel = { [weak self] in self?.close() }
         panel.onMoveSelection = { [weak self] delta in
             guard let self else { return }
@@ -161,14 +220,11 @@ final class HistoryPanelController: NSWindowController {
         }
         panel.onReturnAction = { [weak self] in
             guard let self, let item = self.currentSelection else { return }
-            let result = self.copyToClipboard(item)
-            if result.isSuccess {
-                self.close()
-            }
+            self.copyToClipboard(item, dismissOnSuccess: true)
         }
         panel.onCopyAction = { [weak self] in
             guard let self, let item = self.currentSelection else { return }
-            _ = self.copyToClipboard(item)
+            self.copyToClipboard(item)
         }
         panel.onDeleteAction = { [weak self] in
             guard let self, let item = self.currentSelection else { return }
@@ -261,30 +317,38 @@ final class HistoryPanel: NSPanel {
     }
 
     override func sendEvent(_ event: NSEvent) {
-        guard event.type == .keyDown else {
+        guard event.type == .keyDown, attachedSheet == nil else {
             super.sendEvent(event)
             return
         }
 
+        // The field editor must receive composition events before history shortcuts.
+        let textInput = firstResponder as? NSTextInputClient
+        if textInput?.hasMarkedText() == true {
+            super.sendEvent(event)
+            return
+        }
+        let isEditingText = firstResponder is NSTextView || firstResponder is NSTextField
         let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+            .subtracting([.capsLock, .numericPad, .function])
 
         switch event.keyCode {
         case 53:
             onCancel?()
         case 51, 117:
-            if modifiers.subtracting([.numericPad, .function]).isEmpty {
+            if !isEditingText && modifiers.isEmpty {
                 onDeleteAction?()
             } else {
                 super.sendEvent(event)
             }
         case 126:
-            onMoveSelection?(-1)
+            if modifiers.isEmpty { onMoveSelection?(-1) } else { super.sendEvent(event) }
         case 125:
-            onMoveSelection?(1)
+            if modifiers.isEmpty { onMoveSelection?(1) } else { super.sendEvent(event) }
         case 36, 76:
-            if modifiers.contains(.option) {
+            if modifiers == .option {
                 onCopyAction?()
-            } else if modifiers.subtracting([.numericPad]).isEmpty {
+            } else if modifiers.isEmpty {
                 onReturnAction?()
             } else {
                 super.sendEvent(event)

@@ -1,17 +1,21 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+if [[ -z "${DEVELOPER_DIR:-}" && -d "/Applications/Xcode.app/Contents/Developer" ]]; then
+  export DEVELOPER_DIR="/Applications/Xcode.app/Contents/Developer"
+fi
+
 MODE="${1:-run}"
 APP_NAME="PasteLite"
 BUNDLE_ID="com.xia.PasteLite"
-APP_VERSION="${APP_VERSION:-0.1.1}"
-APP_BUILD="${APP_BUILD:-11}"
+APP_VERSION="${APP_VERSION:-0.2.0}"
+APP_BUILD="${APP_BUILD:-20}"
 PASTELITE_UPDATE_CHECK_URL="${PASTELITE_UPDATE_CHECK_URL:-https://api.github.com/repos/MoarLiu/PasteLite/releases/latest}"
 MIN_SYSTEM_VERSION="12.0"
 CONFIGURATION="${CONFIGURATION:-debug}"
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-DIST_DIR="$ROOT_DIR/dist"
+DIST_DIR="${DIST_DIR:-$ROOT_DIR/dist}"
 RESOURCES_DIR="$ROOT_DIR/Resources"
 APP_BUNDLE="$DIST_DIR/$APP_NAME.app"
 APP_CONTENTS="$APP_BUNDLE/Contents"
@@ -22,7 +26,9 @@ INFO_PLIST="$APP_CONTENTS/Info.plist"
 APP_ARCHIVE="$DIST_DIR/$APP_NAME-app.zip"
 SWIFT_BUILD_SCRATCH_PATH="${SWIFT_BUILD_SCRATCH_PATH:-$ROOT_DIR/.build-run}"
 
-pkill -x "$APP_NAME" >/dev/null 2>&1 || true
+if [[ "$MODE" != "--package" && "$MODE" != "package" ]]; then
+  pkill -x "$APP_NAME" >/dev/null 2>&1 || true
+fi
 
 build_args=(--scratch-path "$SWIFT_BUILD_SCRATCH_PATH" --configuration "$CONFIGURATION" --product "$APP_NAME")
 bin_path_args=(--scratch-path "$SWIFT_BUILD_SCRATCH_PATH" --configuration "$CONFIGURATION" --show-bin-path)
@@ -39,6 +45,11 @@ rm -rf "$APP_BUNDLE"
 mkdir -p "$APP_MACOS" "$APP_RESOURCES"
 cp "$BUILD_BINARY" "$APP_BINARY"
 chmod +x "$APP_BINARY"
+
+if [[ "$CONFIGURATION" == "release" ]]; then
+  # Remove local build paths from debug symbols before signing the distributable.
+  xcrun strip -S "$APP_BINARY"
+fi
 
 if [[ -f "$RESOURCES_DIR/AppIcon.icns" ]]; then
   cp "$RESOURCES_DIR/AppIcon.icns" "$APP_RESOURCES/AppIcon.icns"

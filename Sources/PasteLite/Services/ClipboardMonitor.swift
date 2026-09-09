@@ -6,16 +6,21 @@ import Foundation
 final class ClipboardMonitor {
     private weak var historyStore: (any HistoryStore)?
     private var timer: Timer?
+    private var captureTask: Task<Void, Never>?
+    private let onError: (String) -> Void
     private var lastChangeCount: Int
-    private let pasteboard = NSPasteboard.general
+    private let pasteboard: NSPasteboard
     private let pollInterval: TimeInterval = 0.5
     private let maxAssetByteCount = 20 * 1024 * 1024
     private let maxItemByteCount = 64 * 1024 * 1024
 
     private let supportedTypes = Set(NSPasteboard.PasteboardType.pasteLiteReadableTypes)
 
-    init(historyStore: any HistoryStore) {
+    init(historyStore: any HistoryStore, pasteboard: NSPasteboard = .general,
+         onError: @escaping (String) -> Void = { _ in }) {
+        self.onError = onError
         self.historyStore = historyStore
+        self.pasteboard = pasteboard
         self.lastChangeCount = pasteboard.changeCount
     }
 
@@ -23,7 +28,7 @@ final class ClipboardMonitor {
         guard timer == nil else { return }
         let timer = Timer(timeInterval: pollInterval, repeats: true) { [weak self] _ in
             Task { @MainActor in
-                self?.checkForChanges()
+                await self?.checkForChanges()
             }
         }
         RunLoop.main.add(timer, forMode: .common)
@@ -33,14 +38,16 @@ final class ClipboardMonitor {
     func stop() {
         timer?.invalidate()
         timer = nil
+        captureTask?.cancel()
     }
 
-    private func checkForChanges() {
+    func checkForChanges() async {
+        guard captureTask == nil else { return }
         let currentChangeCount = pasteboard.changeCount
         guard currentChangeCount != lastChangeCount else { return }
         lastChangeCount = currentChangeCount
 
-        if PasteLitePasteboardWriteGuard.consumeIfSelfWrite(changeCount: currentChangeCount) {
+        if PasteLitePasteboardWriteGuard.consumeIfSelfWrite(changeCount: currentChangeCount, on: pasteboard) {
             return
         }
 
@@ -51,26 +58,40 @@ final class ClipboardMonitor {
         }
 
         let sourceApp = NSWorkspace.shared.frontmostApplication
+        let sourceName = sourceApp?.localizedName
+        let sourceIdentifier = sourceApp?.bundleIdentifier
+        let copiedAt = Date()
         let itemAssets = collectAssets()
-        guard !itemAssets.isEmpty else { return }
-
-        let kind = detectKind(assets: itemAssets)
-        let previewText = previewText(for: itemAssets, kind: kind)
-        guard !previewText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || kind == .image || kind == .file else {
-            return
+        let nativeColorHex: String?
+        if itemAssets.contains(where: { NSPasteboard.PasteboardType.pasteLiteColorTypes.contains($0.pasteboardType) }),
+           let color = NSColor(from: pasteboard) {
+            nativeColorHex = ColorDetector.hexString(from: color)
+        } else {
+            nativeColorHex = nil
         }
+        // A provider may replace the clipboard while its promised data is read.
+        guard pasteboard.changeCount == currentChangeCount, !itemAssets.isEmpty else { return }
 
-        let item = ClipboardItem(
-            title: title(for: previewText, kind: kind, assets: itemAssets),
-            kind: kind,
-            sourceAppName: sourceApp?.localizedName,
-            sourceBundleIdentifier: sourceApp?.bundleIdentifier,
-            contentHash: ClipboardContentHasher.hash(assets: itemAssets),
-            previewText: previewText,
-            assets: itemAssets
-        )
-
-        historyStore?.add(item)
+        captureTask = Task { [weak self] in
+            let processing = Task.detached(priority: .utility) {
+                ClipboardItemFactory.make(assets: itemAssets, nativeColorHex: nativeColorHex,
+                                          sourceAppName: sourceName, sourceBundleIdentifier: sourceIdentifier,
+                                          copiedAt: copiedAt)
+            }
+            let item = await withTaskCancellationHandler {
+                await processing.value
+            } onCancel: {
+                processing.cancel()
+            }
+            guard let self else { return }
+            defer { self.captureTask = nil }
+            guard !Task.isCancelled, let item, let historyStore = self.historyStore else { return }
+            let result = await historyStore.add(item)
+            if case let .failure(message) = result, !Task.isCancelled {
+                self.onError(message)
+            }
+        }
+        await captureTask?.value
     }
 
     private func collectAssets() -> [ClipboardAsset] {
@@ -82,6 +103,7 @@ final class ClipboardMonitor {
             let types = Set(pasteboardItem.types)
                 .intersection(supportedTypes)
                 .filter { !$0.isPasteLiteIgnored }
+                .sorted { $0.rawValue < $1.rawValue }
 
             for type in types {
                 guard let data = pasteboardItem.data(forType: type) else { continue }
@@ -94,7 +116,7 @@ final class ClipboardMonitor {
         }
 
         if assets.isEmpty {
-            for type in supportedTypes {
+            for type in supportedTypes.sorted(by: { $0.rawValue < $1.rawValue }) {
                 guard let data = pasteboard.data(forType: type) else { continue }
                 appendAsset(
                     ClipboardAsset(index: 0, pasteboardType: type, data: data),
@@ -126,48 +148,45 @@ final class ClipboardMonitor {
         assets.append(asset)
     }
 
-    private func detectKind(assets: [ClipboardAsset]) -> ClipboardKind {
-        if assets.contains(where: { $0.pasteboardType == .fileURL }) { return .file }
-        if assets.contains(where: { NSPasteboard.PasteboardType.pasteLiteImageTypes.contains($0.pasteboardType) }) { return .image }
-        let text = string(from: assets)
-        if ColorDetector.color(from: text) != nil { return .color }
-        if URLDetector.isLikelyURL(text) { return .link }
-        return .text
-    }
+}
 
-    private func previewText(for assets: [ClipboardAsset], kind: ClipboardKind) -> String {
-        if kind == .file {
-            return assets
-                .filter { $0.pasteboardType == .fileURL }
-                .compactMap { URL(dataRepresentation: $0.data, relativeTo: nil)?.path }
-                .joined(separator: "\n")
-        }
-        return string(from: assets)
-    }
-
-    private func title(for previewText: String, kind: ClipboardKind, assets: [ClipboardAsset]) -> String {
-        switch kind {
-        case .image:
-            if let imageAsset = assets.first(where: { NSPasteboard.PasteboardType.pasteLiteImageTypes.contains($0.pasteboardType) }),
-               let image = NSImage(data: imageAsset.data) {
-                return "Image (\(Int(image.size.width)) x \(Int(image.size.height)))"
+enum ClipboardItemFactory {
+    static func make(assets: [ClipboardAsset], nativeColorHex: String?, sourceAppName: String?,
+                     sourceBundleIdentifier: String?, copiedAt: Date) -> ClipboardItem? {
+        guard !Task.isCancelled, !assets.isEmpty else { return nil }
+        let textAsset = assets.first(where: { $0.pasteboardType == .string })
+            ?? assets.first(where: { $0.pasteboardType == .URL })
+        let text = textAsset.flatMap { String(data: $0.data, encoding: .utf8) } ?? ""
+        let kind: ClipboardKind
+        let preview: String
+        let title: String
+        if assets.contains(where: { $0.pasteboardType == .fileURL }) {
+            kind = .file
+            let files = assets.filter { $0.pasteboardType == .fileURL }
+            preview = files.compactMap { URL(dataRepresentation: $0.data, relativeTo: nil)?.path }.joined(separator: "\n")
+            title = files.count == 1 ? "File" : "\(files.count) Files"
+        } else if assets.contains(where: { NSPasteboard.PasteboardType.pasteLiteImageTypes.contains($0.pasteboardType) }) {
+            kind = .image
+            preview = text
+            title = ClipboardImageProcessor.title(for: assets)
+        } else {
+            preview = nativeColorHex ?? text
+            if nativeColorHex != nil || ColorDetector.color(from: text) != nil {
+                kind = .color
+            } else if URLDetector.isLikelyURL(text) {
+                kind = .link
+            } else {
+                kind = .text
             }
-            return "Image"
-        case .file:
-            let count = assets.filter { $0.pasteboardType == .fileURL }.count
-            return count == 1 ? "File" : "\(count) Files"
-        case .color, .link, .text:
-            return previewText.trimmingCharacters(in: .whitespacesAndNewlines)
+            title = preview.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !title.isEmpty else { return nil }
         }
+        let contentHash = ClipboardContentHasher.hash(assets: assets)
+        guard !Task.isCancelled else { return nil }
+        return ClipboardItem(title: title, kind: kind, sourceAppName: sourceAppName,
+                             sourceBundleIdentifier: sourceBundleIdentifier, copiedAt: copiedAt,
+                             contentHash: contentHash, previewText: preview, assets: assets)
     }
-
-    private func string(from assets: [ClipboardAsset]) -> String {
-        guard let data = assets.first(where: { $0.pasteboardType == .string || $0.pasteboardType == .URL })?.data else {
-            return ""
-        }
-        return String(data: data, encoding: .utf8) ?? ""
-    }
-
 }
 
 enum ClipboardContentHasher {

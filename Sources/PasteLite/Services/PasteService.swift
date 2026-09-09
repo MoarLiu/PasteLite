@@ -17,44 +17,110 @@ enum PasteServiceResult: Equatable {
 final class PasteService {
     private weak var historyStore: (any HistoryStore)?
     private let pasteboard: NSPasteboard
+    private let environment: any PasteEnvironment
 
-    init(historyStore: any HistoryStore, pasteboard: NSPasteboard = .general) {
+    init(historyStore: any HistoryStore, pasteboard: NSPasteboard = .general, environment: (any PasteEnvironment)? = nil) {
+        self.environment = environment ?? SystemPasteEnvironment()
         self.historyStore = historyStore
         self.pasteboard = pasteboard
     }
 
     @discardableResult
-    func copyToClipboard(_ item: ClipboardItem) -> PasteServiceResult {
-        write(item)
+    func copyToClipboard(_ item: ClipboardItem) async -> PasteServiceResult {
+        let changeCount = pasteboard.changeCount
+        do {
+            let loaded = try await resolve(item)
+            try Task.checkCancellation()
+            guard pasteboard.changeCount == changeCount else {
+                return .failure("The clipboard changed while loading this item. Please copy it again.")
+            }
+            return write(loaded)
+        } catch is CancellationError {
+            return .failure("Copy cancelled.")
+        } catch {
+            return .failure(error.localizedDescription)
+        }
     }
 
     @discardableResult
-    func paste(_ item: ClipboardItem, into previousApp: NSRunningApplication?) -> PasteServiceResult {
-        guard AccessibilityService.promptIfNeeded() else {
+    func paste(_ item: ClipboardItem, into previousApp: NSRunningApplication?,
+               beforeActivation: @MainActor () -> Void = {}) async -> PasteServiceResult {
+        guard let target = previousApp, !environment.isTerminated(target),
+              target.processIdentifier != environment.ownProcessIdentifier else {
+            return .failure("The target app is unavailable. Open history from the app you want to paste into.")
+        }
+        guard environment.requestAccessibility() else {
             return .failure("Paste requires Accessibility permission. Enable it in System Settings, then try again.")
         }
 
-        let result = write(item)
-        guard result.isSuccess else { return result }
+        let startingPID = environment.frontmostProcessIdentifier
+        let originalChangeCount = pasteboard.changeCount
+        do {
+            let loaded = try await resolve(item)
+            try Task.checkCancellation()
+            guard !environment.isTerminated(target),
+                  environment.frontmostProcessIdentifier == startingPID,
+                  pasteboard.changeCount == originalChangeCount else {
+                return .failure("The active app or clipboard changed. Paste was cancelled.")
+            }
+            let result = write(loaded)
+            guard result.isSuccess else { return result }
+            let writtenChangeCount = pasteboard.changeCount
+            beforeActivation()
+            try Task.checkCancellation()
 
-        if #available(macOS 14.0, *) {
-            previousApp?.activate()
-        } else {
-            previousApp?.activate(options: .activateIgnoringOtherApps)
-        }
+            let activated = environment.activate(target)
+            guard activated else { return .failure("Could not activate the target app. The item was copied to the clipboard.") }
 
-        Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 120_000_000)
-            guard AccessibilityService.isTrusted() else { return }
-            Self.simulateCommandV()
+            let deadline = environment.uptime + 1
+            var activeObservations = 0
+            while environment.uptime < deadline {
+                try await environment.waitForActivation()
+                try Task.checkCancellation()
+                guard !environment.isTerminated(target), environment.isAccessibilityTrusted,
+                      pasteboard.changeCount == writtenChangeCount else {
+                    return .failure("The target app, permission, or clipboard changed. Paste was cancelled.")
+                }
+                let activePID = environment.frontmostProcessIdentifier
+                if activePID == target.processIdentifier, environment.isActive(target) {
+                    activeObservations += 1
+                    if activeObservations >= 2 {
+                        guard environment.sendPaste(to: target) else {
+                            return .failure("Could not send Paste to the target app. The item is on the clipboard.")
+                        }
+                        return .success
+                    }
+                } else {
+                    activeObservations = 0
+                    if let activePID, activePID != startingPID,
+                       activePID != environment.ownProcessIdentifier {
+                        return .failure("The active app changed. Paste was cancelled.")
+                    }
+                }
+            }
+            return .failure("The target app did not become active. The item was copied to the clipboard.")
+        } catch is CancellationError {
+            return .failure("Paste cancelled.")
+        } catch {
+            return .failure(error.localizedDescription)
         }
-        return .success
+    }
+
+    private func resolve(_ item: ClipboardItem) async throws -> ClipboardItem {
+        try Task.checkCancellation()
+        if item.hasLoadedAssets { return item }
+        guard let historyStore else { throw HistoryItemLoadError.unavailable }
+        return try await historyStore.resolve(item)
     }
 
     private func write(_ item: ClipboardItem) -> PasteServiceResult {
+        let originalChangeCount = pasteboard.changeCount
         let preparedItems = preparePasteboardItems(for: item)
         guard preparedItems.result.isSuccess else { return preparedItems.result }
         let snapshot = PasteboardSnapshot.capture(from: pasteboard)
+        guard pasteboard.changeCount == originalChangeCount else {
+            return .failure("The clipboard changed while preparing this item. Please try again.")
+        }
 
         pasteboard.clearContents()
         guard pasteboard.writeObjects(preparedItems.items) else {
@@ -96,20 +162,6 @@ final class PasteService {
         return (items, .success)
     }
 
-    private static func simulateCommandV() {
-        let source = CGEventSource(stateID: .combinedSessionState)
-        source?.setLocalEventsFilterDuringSuppressionState(
-            [.permitLocalMouseEvents, .permitSystemDefinedEvents],
-            state: .eventSuppressionStateSuppressionInterval
-        )
-
-        let keyDown = CGEvent(keyboardEventSource: source, virtualKey: 9, keyDown: true)
-        let keyUp = CGEvent(keyboardEventSource: source, virtualKey: 9, keyDown: false)
-        keyDown?.flags = .maskCommand
-        keyUp?.flags = .maskCommand
-        keyDown?.post(tap: .cgAnnotatedSessionEventTap)
-        keyUp?.post(tap: .cgAnnotatedSessionEventTap)
-    }
 }
 
 private struct PasteboardSnapshot {

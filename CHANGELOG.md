@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.2.0 - 2026-09-09
+
+Version 0.2.0 (build 20).
+
+- Respect search-field editing and input-method composition before dispatching history shortcuts.
+- Validate the paste target, focus, clipboard version, and cancellation before sending Paste.
+- Show the actual paste target and report storage failures or memory-only history.
+- Move SQLite work off the main actor and load original attachments on demand.
+- Downsample and cache image previews with a memory budget.
+- Preserve native clipboard colors and text containing NUL characters.
+- Prevent cancelled status timers from clearing newer messages.
+
 ## 0.1.1 - 2026-07-10
 
 - Enabled GitHub release checks by default in packaged builds.

@@ -71,20 +71,25 @@ extension NSPasteboardItem {
 @MainActor
 enum PasteLitePasteboardWriteGuard {
     private static var ignoredChangeCount: Int?
+    private static var ignoredPasteboardName: NSPasteboard.Name?
 
     static func markSelfWrite(on pasteboard: NSPasteboard) {
         ignoredChangeCount = pasteboard.changeCount
+        ignoredPasteboardName = pasteboard.name
     }
 
-    static func consumeIfSelfWrite(changeCount: Int) -> Bool {
+    static func consumeIfSelfWrite(changeCount: Int, on pasteboard: NSPasteboard = .general) -> Bool {
+        guard ignoredPasteboardName == pasteboard.name else { return false }
         guard ignoredChangeCount == changeCount else {
             if let ignoredChangeCount, changeCount > ignoredChangeCount {
                 self.ignoredChangeCount = nil
+                ignoredPasteboardName = nil
             }
             return false
         }
 
         ignoredChangeCount = nil
+        ignoredPasteboardName = nil
         return true
     }
 }

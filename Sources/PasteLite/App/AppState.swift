@@ -6,6 +6,8 @@ final class AppState: ObservableObject {
     @Published var selectedFilter: HistoryFilter = .all
     @Published var selectedItemID: UUID?
     @Published var statusMessage: String?
+    @Published var pasteTargetName: String?
+    @Published var isPerformingClipboardAction = false
     @Published private(set) var presentationVersion = 0
     private var statusClearTask: Task<Void, Never>?
 
@@ -22,11 +24,13 @@ final class AppState: ObservableObject {
 
         let nanoseconds = UInt64(seconds * 1_000_000_000)
         statusClearTask = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: nanoseconds)
-            await MainActor.run {
-                guard self?.statusMessage == message else { return }
-                self?.clearStatus()
+            do {
+                try await Task.sleep(nanoseconds: nanoseconds)
+            } catch {
+                return
             }
+            guard !Task.isCancelled else { return }
+            self?.clearStatus()
         }
     }
 

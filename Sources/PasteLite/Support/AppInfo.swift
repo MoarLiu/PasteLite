@@ -1,8 +1,8 @@
 import Foundation
 
 enum AppInfo {
-    static let fallbackVersion = "0.1.1"
-    static let fallbackBuild = "11"
+    static let fallbackVersion = "0.2.0"
+    static let fallbackBuild = "20"
     static let defaultUpdateCheckURL = URL(string: "https://api.github.com/repos/MoarLiu/PasteLite/releases/latest")
 
     static var version: String {

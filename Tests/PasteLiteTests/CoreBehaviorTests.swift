@@ -170,7 +170,7 @@ func historyPanelReturnKeyDispatchesReturnAction() throws {
 
 @MainActor
 @Test
-func historyPanelReturnActionCopiesAndHidesWindow() throws {
+func historyPanelReturnActionCopiesAndHidesWindow() async throws {
     let pasteboard = NSPasteboard(name: NSPasteboard.Name("PasteLiteTests.\(UUID().uuidString)"))
     defer { pasteboard.releaseGlobally() }
 
@@ -180,7 +180,7 @@ func historyPanelReturnActionCopiesAndHidesWindow() throws {
     let store = SQLiteHistoryStore(databaseURL: databaseURL, limit: 10)
     let service = PasteService(historyStore: store, pasteboard: pasteboard)
     let item = makeItem(title: "Return", content: "return copied text", contentHash: "return-copy")
-    store.add(item)
+    await store.add(item)
 
     let controller = HistoryPanelController(
         appState: appState,
@@ -191,6 +191,7 @@ func historyPanelReturnActionCopiesAndHidesWindow() throws {
 
     panel.orderFrontRegardless()
     panel.onReturnAction?()
+    await controller.clipboardActionTask?.value
 
     #expect(pasteboard.string(forType: .string) == "return copied text")
     #expect(!panel.isVisible)
@@ -198,7 +199,7 @@ func historyPanelReturnActionCopiesAndHidesWindow() throws {
 
 @MainActor
 @Test
-func copyToClipboardWritesItemWithoutPastePermissionPath() {
+func copyToClipboardWritesItemWithoutPastePermissionPath() async {
     let pasteboard = NSPasteboard(name: NSPasteboard.Name("PasteLiteTests.\(UUID().uuidString)"))
     defer { pasteboard.releaseGlobally() }
 
@@ -207,7 +208,7 @@ func copyToClipboardWritesItemWithoutPastePermissionPath() {
     let store = SQLiteHistoryStore(databaseURL: databaseURL, limit: 10)
     let service = PasteService(historyStore: store, pasteboard: pasteboard)
 
-    let result = service.copyToClipboard(makeItem(title: "Copied", content: "copied text", contentHash: "copied-hash"))
+    let result = await service.copyToClipboard(makeItem(title: "Copied", content: "copied text", contentHash: "copied-hash"))
 
     #expect(result == .success)
     #expect(pasteboard.string(forType: .string) == "copied text")
@@ -215,13 +216,13 @@ func copyToClipboardWritesItemWithoutPastePermissionPath() {
 
 @MainActor
 @Test
-func sqliteStoreDeduplicatesByContentHash() {
+func sqliteStoreDeduplicatesByContentHash() async {
     let (databaseURL, directory) = makeDatabaseURL()
     defer { try? FileManager.default.removeItem(at: directory) }
     let store = SQLiteHistoryStore(databaseURL: databaseURL, limit: 10)
 
-    store.add(makeItem(title: "First", content: "same", contentHash: "same-hash"))
-    store.add(makeItem(title: "Second", content: "same", contentHash: "same-hash"))
+    await store.add(makeItem(title: "First", content: "same", contentHash: "same-hash"))
+    await store.add(makeItem(title: "Second", content: "same", contentHash: "same-hash"))
 
     #expect(store.items.count == 1)
     #expect(store.items.first?.title == "Second")
@@ -229,59 +230,61 @@ func sqliteStoreDeduplicatesByContentHash() {
 
 @MainActor
 @Test
-func sqliteStorePrunesToLimit() {
+func sqliteStorePrunesToLimit() async {
     let (databaseURL, directory) = makeDatabaseURL()
     defer { try? FileManager.default.removeItem(at: directory) }
     let store = SQLiteHistoryStore(databaseURL: databaseURL, limit: 2)
 
-    store.add(makeItem(title: "One", content: "1", contentHash: "hash-1"))
-    store.add(makeItem(title: "Two", content: "2", contentHash: "hash-2"))
-    store.add(makeItem(title: "Three", content: "3", contentHash: "hash-3"))
+    await store.add(makeItem(title: "One", content: "1", contentHash: "hash-1"))
+    await store.add(makeItem(title: "Two", content: "2", contentHash: "hash-2"))
+    await store.add(makeItem(title: "Three", content: "3", contentHash: "hash-3"))
 
     #expect(store.items.map(\.title) == ["Three", "Two"])
 }
 
 @MainActor
 @Test
-func sqliteStoreClearRemovesPersistedItems() {
+func sqliteStoreClearRemovesPersistedItems() async {
     let (databaseURL, directory) = makeDatabaseURL()
     defer { try? FileManager.default.removeItem(at: directory) }
     let store = SQLiteHistoryStore(databaseURL: databaseURL, limit: 10)
-    store.add(makeItem(title: "Saved", content: "saved", contentHash: "saved-hash"))
+    await store.add(makeItem(title: "Saved", content: "saved", contentHash: "saved-hash"))
 
-    store.clear()
+    await store.clear()
 
     let reloadedStore = SQLiteHistoryStore(databaseURL: databaseURL, limit: 10)
+    await reloadedStore.loadRecentItems()
     #expect(reloadedStore.items.isEmpty)
 }
 
 @MainActor
 @Test
-func sqliteStoreRemoveDeletesPersistedItem() throws {
+func sqliteStoreRemoveDeletesPersistedItem() async throws {
     let (databaseURL, directory) = makeDatabaseURL()
     defer { try? FileManager.default.removeItem(at: directory) }
     let store = SQLiteHistoryStore(databaseURL: databaseURL, limit: 10)
     let first = makeItem(title: "First", content: "first", contentHash: "first-hash")
     let second = makeItem(title: "Second", content: "second", contentHash: "second-hash")
-    store.add(first)
-    store.add(second)
+    await store.add(first)
+    await store.add(second)
 
-    store.remove(id: first.id)
+    await store.remove(id: first.id)
 
     #expect(store.items.map(\.title) == ["Second"])
 
     let reloadedStore = SQLiteHistoryStore(databaseURL: databaseURL, limit: 10)
+    await reloadedStore.loadRecentItems()
     #expect(reloadedStore.items.map(\.title) == ["Second"])
 }
 
 @MainActor
 @Test
-func sqliteStoreKeepsMemoryStateWhenInsertFails() throws {
+func sqliteStoreKeepsMemoryStateWhenInsertFails() async throws {
     let (databaseURL, directory) = makeDatabaseURL()
     defer { try? FileManager.default.removeItem(at: directory) }
     let store = SQLiteHistoryStore(databaseURL: databaseURL, limit: 10)
     let first = makeItem(title: "First", content: "first", contentHash: "first-hash")
-    store.add(first)
+    await store.add(first)
 
     let adminDatabase = try SQLiteDatabase(url: databaseURL)
     try adminDatabase.execute(
@@ -294,7 +297,7 @@ func sqliteStoreKeepsMemoryStateWhenInsertFails() throws {
         """
     )
 
-    let result = store.add(makeItem(title: "Second", content: "second", contentHash: "second-hash"))
+    let result = await store.add(makeItem(title: "Second", content: "second", contentHash: "second-hash"))
 
     #expect(result == .failure("Could not save this clipboard item to history."))
     #expect(store.items.map(\.title) == ["First"])
@@ -302,12 +305,12 @@ func sqliteStoreKeepsMemoryStateWhenInsertFails() throws {
 
 @MainActor
 @Test
-func sqliteStoreKeepsMemoryStateWhenDeleteFails() throws {
+func sqliteStoreKeepsMemoryStateWhenDeleteFails() async throws {
     let (databaseURL, directory) = makeDatabaseURL()
     defer { try? FileManager.default.removeItem(at: directory) }
     let store = SQLiteHistoryStore(databaseURL: databaseURL, limit: 10)
     let item = makeItem(title: "Saved", content: "saved", contentHash: "saved-hash")
-    store.add(item)
+    await store.add(item)
 
     let adminDatabase = try SQLiteDatabase(url: databaseURL)
     try adminDatabase.execute(
@@ -320,8 +323,8 @@ func sqliteStoreKeepsMemoryStateWhenDeleteFails() throws {
         """
     )
 
-    let removeResult = store.remove(id: item.id)
-    let clearResult = store.clear()
+    let removeResult = await store.remove(id: item.id)
+    let clearResult = await store.clear()
 
     #expect(removeResult == .failure("Could not remove this clipboard item from history."))
     #expect(clearResult == .failure("Could not clear clipboard history."))
@@ -340,8 +343,8 @@ func selfWriteChangeCountIsConsumedOnce() {
     PasteLitePasteboardWriteGuard.markSelfWrite(on: pasteboard)
     let changeCount = pasteboard.changeCount
 
-    #expect(PasteLitePasteboardWriteGuard.consumeIfSelfWrite(changeCount: changeCount))
-    #expect(!PasteLitePasteboardWriteGuard.consumeIfSelfWrite(changeCount: changeCount))
+    #expect(PasteLitePasteboardWriteGuard.consumeIfSelfWrite(changeCount: changeCount, on: pasteboard))
+    #expect(!PasteLitePasteboardWriteGuard.consumeIfSelfWrite(changeCount: changeCount, on: pasteboard))
 }
 
 @MainActor
@@ -360,13 +363,13 @@ func selfWriteGuardKeepsOnlyLatestChangeCount() {
     PasteLitePasteboardWriteGuard.markSelfWrite(on: pasteboard)
     let secondChangeCount = pasteboard.changeCount
 
-    #expect(!PasteLitePasteboardWriteGuard.consumeIfSelfWrite(changeCount: firstChangeCount))
-    #expect(PasteLitePasteboardWriteGuard.consumeIfSelfWrite(changeCount: secondChangeCount))
+    #expect(!PasteLitePasteboardWriteGuard.consumeIfSelfWrite(changeCount: firstChangeCount, on: pasteboard))
+    #expect(PasteLitePasteboardWriteGuard.consumeIfSelfWrite(changeCount: secondChangeCount, on: pasteboard))
 }
 
 @MainActor
 @Test
-func copyFailureDoesNotClearExistingPasteboardContents() {
+func copyFailureDoesNotClearExistingPasteboardContents() async {
     let pasteboard = NSPasteboard(name: NSPasteboard.Name("PasteLiteTests.\(UUID().uuidString)"))
     defer { pasteboard.releaseGlobally() }
     pasteboard.clearContents()
@@ -377,7 +380,7 @@ func copyFailureDoesNotClearExistingPasteboardContents() {
     let store = SQLiteHistoryStore(databaseURL: databaseURL, limit: 10)
     let service = PasteService(historyStore: store, pasteboard: pasteboard)
 
-    let result = service.copyToClipboard(
+    let result = await service.copyToClipboard(
         ClipboardItem(
             title: "Empty",
             kind: .text,
