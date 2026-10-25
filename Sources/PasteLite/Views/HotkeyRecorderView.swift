@@ -38,6 +38,12 @@ struct HotkeyRecorderView: View {
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, alignment: .trailing)
         }
+        .onDisappear {
+            hotkeySettings.cancelRecording()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didResignActiveNotification)) { _ in
+            hotkeySettings.cancelRecording()
+        }
     }
 
     private var recorderButton: some View {
@@ -166,9 +172,22 @@ private final class HotkeyCaptureNSView: NSView {
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
+        NotificationCenter.default.removeObserver(self)
+        guard let window else { return }
+        for name in [NSWindow.willCloseNotification, NSWindow.didResignKeyNotification] {
+            NotificationCenter.default.addObserver(self, selector: #selector(cancelRecording), name: name, object: window)
+        }
         DispatchQueue.main.async {
             self.window?.makeFirstResponder(self)
         }
+    }
+
+    deinit {
+        NotificationCenter.default.removeObserver(self)
+    }
+
+    @objc private func cancelRecording(_ notification: Notification) {
+        onCancel?()
     }
 
     override func mouseDown(with event: NSEvent) {

@@ -112,13 +112,17 @@ final class HotkeySettingsStore: ObservableObject {
     }
 
     func beginRecording() {
+        guard !isRecording else { return }
         isRecording = true
         validationMessage = "Press a shortcut containing Command, Control, or Option. Esc cancels."
+        settingsVersion += 1
     }
 
     func cancelRecording() {
+        guard isRecording else { return }
         isRecording = false
         validationMessage = nil
+        settingsVersion += 1
     }
 
     func recordShortcut(keyCode: UInt32, modifiers: UInt32, title: String) {

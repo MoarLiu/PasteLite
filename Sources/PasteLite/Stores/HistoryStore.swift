@@ -14,8 +14,11 @@ enum HistoryStoreMutationResult: Equatable, Sendable {
 @MainActor
 protocol HistoryStore: AnyObject, ObservableObject {
     var items: [ClipboardItem] { get }
+    var captureGeneration: Int { get }
     func loadRecentItems(limit: Int) async
     @discardableResult func add(_ item: ClipboardItem) async -> HistoryStoreMutationResult
+    @discardableResult func addCaptured(_ item: ClipboardItem, generation: Int) async -> HistoryStoreMutationResult
+    func reportCaptureError(_ message: String?)
     @discardableResult func remove(id: ClipboardItem.ID) async -> HistoryStoreMutationResult
     @discardableResult func clear() async -> HistoryStoreMutationResult
     func resolve(_ item: ClipboardItem) async throws -> ClipboardItem
@@ -23,6 +26,15 @@ protocol HistoryStore: AnyObject, ObservableObject {
 
 @MainActor
 extension HistoryStore {
+    var captureGeneration: Int { 0 }
+
+    func addCaptured(_ item: ClipboardItem, generation: Int) async -> HistoryStoreMutationResult {
+        guard generation == captureGeneration else { return .success }
+        return await add(item)
+    }
+
+    func reportCaptureError(_ message: String?) {}
+
     func loadRecentItems() async {
         await loadRecentItems(limit: SQLiteHistoryStore.defaultLimit)
     }
@@ -35,7 +47,9 @@ final class SQLiteHistoryStore: HistoryStore {
     @Published private(set) var items: [ClipboardItem] = []
     @Published private(set) var storageWarning: String?
     @Published private(set) var errorMessage: String?
+    @Published private(set) var captureErrorMessage: String?
     @Published private(set) var isLoading = true
+    private(set) var captureGeneration = 0
     private let repository: HistoryRepository
     private var appliedRevision = 0
     private var imageCacheGeneration = 0
@@ -60,6 +74,18 @@ final class SQLiteHistoryStore: HistoryStore {
         return mutation.result
     }
 
+    func addCaptured(_ item: ClipboardItem, generation: Int) async -> HistoryStoreMutationResult {
+        guard generation == captureGeneration else { return .success }
+        let mutation = await repository.add(item, captureGeneration: generation)
+        apply(mutation.snapshot)
+        if mutation.result.isSuccess, generation == captureGeneration { captureErrorMessage = nil }
+        return mutation.result
+    }
+
+    func reportCaptureError(_ message: String?) {
+        captureErrorMessage = message
+    }
+
     @discardableResult
     func remove(id: ClipboardItem.ID) async -> HistoryStoreMutationResult {
         let mutation = await repository.remove(id: id)
@@ -70,9 +96,14 @@ final class SQLiteHistoryStore: HistoryStore {
 
     @discardableResult
     func clear() async -> HistoryStoreMutationResult {
-        let mutation = await repository.clear()
+        // Invalidate captures immediately, including work still processing off the main actor.
+        captureGeneration += 1
+        let mutation = await repository.clear(captureGeneration: captureGeneration)
         apply(mutation.snapshot)
-        if mutation.result.isSuccess { clearImageCache() }
+        if mutation.result.isSuccess {
+            clearImageCache()
+            captureErrorMessage = nil
+        }
         return mutation.result
     }
 

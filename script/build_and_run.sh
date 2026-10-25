@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+export COPYFILE_DISABLE=1
 
 if [[ -z "${DEVELOPER_DIR:-}" && -d "/Applications/Xcode.app/Contents/Developer" ]]; then
   export DEVELOPER_DIR="/Applications/Xcode.app/Contents/Developer"
@@ -8,8 +9,8 @@ fi
 MODE="${1:-run}"
 APP_NAME="PasteLite"
 BUNDLE_ID="com.xia.PasteLite"
-APP_VERSION="${APP_VERSION:-0.2.0}"
-APP_BUILD="${APP_BUILD:-20}"
+APP_VERSION="${APP_VERSION:-0.2.1}"
+APP_BUILD="${APP_BUILD:-21}"
 PASTELITE_UPDATE_CHECK_URL="${PASTELITE_UPDATE_CHECK_URL:-https://api.github.com/repos/MoarLiu/PasteLite/releases/latest}"
 MIN_SYSTEM_VERSION="12.0"
 CONFIGURATION="${CONFIGURATION:-debug}"
@@ -43,7 +44,7 @@ BUILD_BINARY="$(swift build "${bin_path_args[@]}")/$APP_NAME"
 
 rm -rf "$APP_BUNDLE"
 mkdir -p "$APP_MACOS" "$APP_RESOURCES"
-cp "$BUILD_BINARY" "$APP_BINARY"
+cp -X "$BUILD_BINARY" "$APP_BINARY"
 chmod +x "$APP_BINARY"
 
 if [[ "$CONFIGURATION" == "release" ]]; then
@@ -52,7 +53,7 @@ if [[ "$CONFIGURATION" == "release" ]]; then
 fi
 
 if [[ -f "$RESOURCES_DIR/AppIcon.icns" ]]; then
-  cp "$RESOURCES_DIR/AppIcon.icns" "$APP_RESOURCES/AppIcon.icns"
+  cp -X "$RESOURCES_DIR/AppIcon.icns" "$APP_RESOURCES/AppIcon.icns"
 fi
 
 cat >"$INFO_PLIST" <<PLIST
@@ -92,6 +93,7 @@ cat >"$INFO_PLIST" <<PLIST
 </plist>
 PLIST
 
+/usr/bin/xattr -cr "$APP_BUNDLE"
 /usr/bin/codesign --force --deep --sign - "$APP_BUNDLE"
 
 open_app() {
@@ -115,7 +117,7 @@ case "$MODE" in
     ;;
   --package|package)
     rm -f "$APP_ARCHIVE"
-    /usr/bin/ditto -c -k --sequesterRsrc --keepParent "$APP_BUNDLE" "$APP_ARCHIVE"
+    /usr/bin/ditto -c -k --norsrc --noextattr --keepParent "$APP_BUNDLE" "$APP_ARCHIVE"
     echo "$APP_BUNDLE"
     echo "$APP_ARCHIVE"
     ;;

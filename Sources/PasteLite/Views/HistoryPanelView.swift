@@ -27,7 +27,7 @@ struct HistoryPanelView: View {
     var body: some View {
         VStack(spacing: 0) {
             toolbar
-            if let message = historyStore.errorMessage ?? historyStore.storageWarning {
+            if let message = historyStore.captureErrorMessage ?? historyStore.errorMessage ?? historyStore.storageWarning {
                 Label(message, systemImage: "exclamationmark.triangle")
                     .font(.caption)
                     .foregroundStyle(.orange)
@@ -122,26 +122,44 @@ struct HistoryPanelView: View {
             } else if filteredItems.isEmpty {
                 emptyList
             } else {
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 4) {
-                        ForEach(displayedSections) { section in
-                            Section {
-                                ForEach(section.items) { item in
-                                    row(for: item, selectedID: selectedID)
-                                }
-                            } header: {
-                                if section.id != displayedSections.first?.id {
-                                    Text(section.title)
-                                        .font(.system(size: 11, weight: .semibold))
-                                        .foregroundStyle(.secondary)
-                                        .padding(.horizontal, 8)
-                                        .padding(.top, 8)
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        LazyVStack(alignment: .leading, spacing: 4) {
+                            ForEach(displayedSections) { section in
+                                Section {
+                                    ForEach(section.items) { item in
+                                        row(for: item, selectedID: selectedID)
+                                            .id(item.id)
+                                    }
+                                } header: {
+                                    if section.id != displayedSections.first?.id {
+                                        Text(section.title)
+                                            .font(.system(size: 11, weight: .semibold))
+                                            .foregroundStyle(.secondary)
+                                            .padding(.horizontal, 8)
+                                            .padding(.top, 8)
+                                    }
                                 }
                             }
                         }
+                        .padding(.horizontal, 8)
+                        .padding(.bottom, 12)
                     }
-                    .padding(.horizontal, 8)
-                    .padding(.bottom, 12)
+                    .onAppear {
+                        if let selectedID { proxy.scrollTo(selectedID, anchor: .center) }
+                    }
+                    .onChange(of: appState.keyboardSelectionVersion) { _ in
+                        if let id = appState.selectedItemID { proxy.scrollTo(id, anchor: .center) }
+                    }
+                    .onChange(of: appState.searchText) { _ in
+                        if let id = selectedItem?.id { proxy.scrollTo(id, anchor: .center) }
+                    }
+                    .onChange(of: appState.selectedFilter) { _ in
+                        if let id = selectedItem?.id { proxy.scrollTo(id, anchor: .center) }
+                    }
+                    .onChange(of: appState.presentationVersion) { _ in
+                        if let firstID = filteredItems.first?.id { proxy.scrollTo(firstID, anchor: .top) }
+                    }
                 }
             }
         }

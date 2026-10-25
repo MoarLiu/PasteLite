@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.2.1 - 2026-10-25
+
+Version 0.2.1 (build 21).
+
+- Prevent clipboard captures started before Clear History from restoring deleted records.
+- Reject oversized clipboard content as a whole and keep the size warning visible in history.
+- Scroll keyboard-selected and filtered history items into view without moving mouse-selected rows, and return to the first item on presentation.
+- Pause the global hotkey while recording a shortcut, then restore the current choice on completion or cancellation.
+- Restrict the history directory to its owner and repair database, WAL, and SHM permissions without replacing saved data.
+- Exclude copied extended attributes and resource forks from release ZIP archives.
+
 ## 0.2.0 - 2026-09-09
 
 Version 0.2.0 (build 20).

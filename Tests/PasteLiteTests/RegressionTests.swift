@@ -7,9 +7,9 @@ import Testing
 @MainActor
 struct RegressionTests {
     @Test
-    func developmentVersionIs020() {
-        #expect(AppInfo.fallbackVersion == "0.2.0")
-        #expect(AppInfo.fallbackBuild == "20")
+    func developmentVersionIs021() {
+        #expect(AppInfo.fallbackVersion == "0.2.1")
+        #expect(AppInfo.fallbackBuild == "21")
     }
 
     @Test
@@ -150,7 +150,7 @@ struct RegressionTests {
                 BEGIN SELECT RAISE(ABORT, 'blocked'); END;
                 """)
             var reportedError: String?
-            let monitor = ClipboardMonitor(historyStore: store, pasteboard: pasteboard) { reportedError = $0 }
+            let monitor = ClipboardMonitor(historyStore: store, pasteboard: pasteboard, onError: { reportedError = $0 })
             pasteboard.clearContents()
             #expect(pasteboard.setString("capture failure", forType: .string))
             await monitor.checkForChanges()
@@ -331,7 +331,7 @@ struct RegressionTests {
 }
 
 @MainActor
-private func withFixture(_ body: (SQLiteHistoryStore, NSPasteboard, URL) async throws -> Void) async throws {
+private func withFixture(_ body: @MainActor (SQLiteHistoryStore, NSPasteboard, URL) async throws -> Void) async throws {
     let directory = FileManager.default.temporaryDirectory.appendingPathComponent("PasteLiteRegression-\(UUID().uuidString)")
     let databaseURL = directory.appendingPathComponent("History.sqlite3")
     let pasteboard = makePasteboard()

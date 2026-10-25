@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
+export COPYFILE_DISABLE=1
 
 APP_NAME="PasteLite"
-APP_VERSION="${APP_VERSION:-0.2.0}"
-APP_BUILD="${APP_BUILD:-20}"
+APP_VERSION="${APP_VERSION:-0.2.1}"
+APP_BUILD="${APP_BUILD:-21}"
 CONFIGURATION="${CONFIGURATION:-release}"
 ARCHES="${ARCHES:-arm64 x86_64}"
 
@@ -60,7 +61,8 @@ for arch in $ARCHES; do
 
   rm -rf "$stage_dir"
   mkdir -p "$stage_dir"
-  ditto "$DIST_DIR/$APP_NAME.app" "$app_path"
+  ditto --norsrc --noextattr "$DIST_DIR/$APP_NAME.app" "$app_path"
+  xattr -cr "$stage_dir"
 
   actual_arches="$(lipo -archs "$app_path/Contents/MacOS/$APP_NAME")"
   if [[ "$actual_arches" != "$arch" ]]; then
@@ -72,7 +74,7 @@ for arch in $ARCHES; do
   plutil -lint "$app_path/Contents/Info.plist" >/dev/null
 
   rm -f "$zip_path" "$zip_path.sha256" "$dmg_path" "$dmg_path.sha256"
-  ditto -c -k --sequesterRsrc --keepParent "$app_path" "$zip_path"
+  ditto -c -k --norsrc --noextattr --keepParent "$app_path" "$zip_path"
   hdiutil create -volname "$APP_NAME $APP_VERSION $arch" -srcfolder "$stage_dir" -ov -format UDZO "$dmg_path" >/dev/null
   hdiutil verify "$dmg_path" >/dev/null
 

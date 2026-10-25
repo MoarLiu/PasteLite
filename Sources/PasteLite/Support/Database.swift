@@ -1,5 +1,6 @@
 import Foundation
 import SQLite3
+import Darwin
 
 enum SQLiteDatabaseError: LocalizedError {
     case openFailed(URL, String)
@@ -19,12 +20,29 @@ final class SQLiteDatabase {
     private let url: URL
     private var handle: OpaquePointer?
 
-    init(url: URL) throws {
+    init(url: URL, privateDirectory: Bool = false) throws {
         self.url = url
+        let directory = url.deletingLastPathComponent()
         try FileManager.default.createDirectory(
-            at: url.deletingLastPathComponent(),
-            withIntermediateDirectories: true
+            at: directory,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
         )
+        // Only tighten an existing directory when the caller owns it exclusively.
+        if privateDirectory {
+            try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
+        }
+
+        // Create without truncating existing history or changing the process-wide umask.
+        // SQLite derives new WAL/SHM permissions from the database file's mode.
+        let descriptor = Darwin.open(url.path, O_CREAT | O_EXCL | O_WRONLY, mode_t(0o600))
+        if descriptor >= 0 {
+            Darwin.close(descriptor)
+        } else if errno != EEXIST {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
+        try Self.restrictFile(at: url)
+        try restrictSidecars()
 
         var database: OpaquePointer?
         let flags = SQLITE_OPEN_CREATE | SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX
@@ -38,9 +56,33 @@ final class SQLiteDatabase {
         }
 
         handle = database
-        try execute("PRAGMA foreign_keys = ON;")
-        try execute("PRAGMA journal_mode = WAL;")
-        try execute("PRAGMA synchronous = NORMAL;")
+        do {
+            try execute("PRAGMA foreign_keys = ON;")
+            try execute("PRAGMA journal_mode = WAL;")
+            try execute("PRAGMA synchronous = NORMAL;")
+            try restrictSidecars()
+        } catch {
+            sqlite3_close(database)
+            handle = nil
+            throw error
+        }
+    }
+
+    private static func restrictFile(at url: URL) throws {
+        let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
+        guard attributes[.type] as? FileAttributeType == .typeRegular else {
+            throw SQLiteDatabaseError.openFailed(url, "Expected a regular database file.")
+        }
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+    }
+
+    private func restrictSidecars() throws {
+        for suffix in ["-wal", "-shm", "-journal"] {
+            let sidecar = URL(fileURLWithPath: url.path + suffix)
+            if FileManager.default.fileExists(atPath: sidecar.path) {
+                try Self.restrictFile(at: sidecar)
+            }
+        }
     }
 
     deinit {

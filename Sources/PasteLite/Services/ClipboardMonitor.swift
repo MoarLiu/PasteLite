@@ -2,12 +2,43 @@ import AppKit
 import CryptoKit
 import Foundation
 
+struct ClipboardCapture: Sendable {
+    var assets: [ClipboardAsset]
+    var nativeColorHex: String?
+    var sourceAppName: String?
+    var sourceBundleIdentifier: String?
+    var copiedAt: Date
+
+    func makeItem() -> ClipboardItem? {
+        ClipboardItemFactory.make(assets: assets, nativeColorHex: nativeColorHex,
+                                  sourceAppName: sourceAppName, sourceBundleIdentifier: sourceBundleIdentifier,
+                                  copiedAt: copiedAt)
+    }
+}
+
+enum ClipboardCaptureError: LocalizedError {
+    case representationTooLarge
+    case itemTooLarge
+
+    var errorDescription: String? {
+        switch self {
+        case .representationTooLarge:
+            return "Clipboard item was not saved because part of its content exceeds the 20 MiB limit."
+        case .itemTooLarge:
+            return "Clipboard item was not saved because its total size exceeds the 64 MiB limit."
+        }
+    }
+}
+
 @MainActor
 final class ClipboardMonitor {
+    typealias CaptureProcessor = @Sendable (ClipboardCapture) async -> ClipboardItem?
+
     private weak var historyStore: (any HistoryStore)?
     private var timer: Timer?
     private var captureTask: Task<Void, Never>?
     private let onError: (String) -> Void
+    private let processCapture: CaptureProcessor
     private var lastChangeCount: Int
     private let pasteboard: NSPasteboard
     private let pollInterval: TimeInterval = 0.5
@@ -17,8 +48,10 @@ final class ClipboardMonitor {
     private let supportedTypes = Set(NSPasteboard.PasteboardType.pasteLiteReadableTypes)
 
     init(historyStore: any HistoryStore, pasteboard: NSPasteboard = .general,
+         processCapture: @escaping CaptureProcessor = { $0.makeItem() },
          onError: @escaping (String) -> Void = { _ in }) {
         self.onError = onError
+        self.processCapture = processCapture
         self.historyStore = historyStore
         self.pasteboard = pasteboard
         self.lastChangeCount = pasteboard.changeCount
@@ -42,7 +75,7 @@ final class ClipboardMonitor {
     }
 
     func checkForChanges() async {
-        guard captureTask == nil else { return }
+        guard captureTask == nil, let historyStore else { return }
         let currentChangeCount = pasteboard.changeCount
         guard currentChangeCount != lastChangeCount else { return }
         lastChangeCount = currentChangeCount
@@ -61,7 +94,16 @@ final class ClipboardMonitor {
         let sourceName = sourceApp?.localizedName
         let sourceIdentifier = sourceApp?.bundleIdentifier
         let copiedAt = Date()
-        let itemAssets = collectAssets()
+        let generation = historyStore.captureGeneration
+        let itemAssets: [ClipboardAsset]
+        do {
+            itemAssets = try collectAssets()
+        } catch {
+            guard pasteboard.changeCount == currentChangeCount else { return }
+            historyStore.reportCaptureError(error.localizedDescription)
+            onError(error.localizedDescription)
+            return
+        }
         let nativeColorHex: String?
         if itemAssets.contains(where: { NSPasteboard.PasteboardType.pasteLiteColorTypes.contains($0.pasteboardType) }),
            let color = NSColor(from: pasteboard) {
@@ -72,11 +114,13 @@ final class ClipboardMonitor {
         // A provider may replace the clipboard while its promised data is read.
         guard pasteboard.changeCount == currentChangeCount, !itemAssets.isEmpty else { return }
 
+        let capture = ClipboardCapture(assets: itemAssets, nativeColorHex: nativeColorHex,
+                                       sourceAppName: sourceName, sourceBundleIdentifier: sourceIdentifier,
+                                       copiedAt: copiedAt)
+        let processor = processCapture
         captureTask = Task { [weak self] in
             let processing = Task.detached(priority: .utility) {
-                ClipboardItemFactory.make(assets: itemAssets, nativeColorHex: nativeColorHex,
-                                          sourceAppName: sourceName, sourceBundleIdentifier: sourceIdentifier,
-                                          copiedAt: copiedAt)
+                await processor(capture)
             }
             let item = await withTaskCancellationHandler {
                 await processing.value
@@ -86,15 +130,16 @@ final class ClipboardMonitor {
             guard let self else { return }
             defer { self.captureTask = nil }
             guard !Task.isCancelled, let item, let historyStore = self.historyStore else { return }
-            let result = await historyStore.add(item)
-            if case let .failure(message) = result, !Task.isCancelled {
+            let result = await historyStore.addCaptured(item, generation: generation)
+            if case let .failure(message) = result, !Task.isCancelled,
+               historyStore.captureGeneration == generation {
                 self.onError(message)
             }
         }
         await captureTask?.value
     }
 
-    private func collectAssets() -> [ClipboardAsset] {
+    private func collectAssets() throws -> [ClipboardAsset] {
         var assets: [ClipboardAsset] = []
         var totalByteCount = 0
         let items = pasteboard.pasteboardItems ?? []
@@ -107,7 +152,7 @@ final class ClipboardMonitor {
 
             for type in types {
                 guard let data = pasteboardItem.data(forType: type) else { continue }
-                appendAsset(
+                try appendAsset(
                     ClipboardAsset(index: itemIndex, pasteboardType: type, data: data),
                     to: &assets,
                     totalByteCount: &totalByteCount
@@ -118,7 +163,7 @@ final class ClipboardMonitor {
         if assets.isEmpty {
             for type in supportedTypes.sorted(by: { $0.rawValue < $1.rawValue }) {
                 guard let data = pasteboard.data(forType: type) else { continue }
-                appendAsset(
+                try appendAsset(
                     ClipboardAsset(index: 0, pasteboardType: type, data: data),
                     to: &assets,
                     totalByteCount: &totalByteCount
@@ -138,11 +183,9 @@ final class ClipboardMonitor {
         _ asset: ClipboardAsset,
         to assets: inout [ClipboardAsset],
         totalByteCount: inout Int
-    ) {
-        guard asset.data.count <= maxAssetByteCount,
-              totalByteCount + asset.data.count <= maxItemByteCount else {
-            return
-        }
+    ) throws {
+        guard asset.data.count <= maxAssetByteCount else { throw ClipboardCaptureError.representationTooLarge }
+        guard totalByteCount + asset.data.count <= maxItemByteCount else { throw ClipboardCaptureError.itemTooLarge }
 
         totalByteCount += asset.data.count
         assets.append(asset)

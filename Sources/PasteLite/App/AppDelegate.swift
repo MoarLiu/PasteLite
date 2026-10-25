@@ -1,5 +1,4 @@
 import AppKit
-import Combine
 import SwiftUI
 
 @MainActor
@@ -12,7 +11,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var panelController: HistoryPanelController?
     private var clipboardMonitor: ClipboardMonitor?
     private var hotkeyManager: HotkeyManager?
-    private var hotkeySettingsCancellable: AnyCancellable?
+    private var hotkeyRegistrationController: HotkeyRegistrationController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -29,23 +28,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
 
         self.panelController = panelController
-        self.clipboardMonitor = ClipboardMonitor(historyStore: historyStore) { [weak appState = self.appState] message in
+        self.clipboardMonitor = ClipboardMonitor(historyStore: historyStore, onError: { [weak appState = self.appState] message in
             appState?.showStatus(message)
-        }
-        self.hotkeyManager = HotkeyManager { [weak panelController] in
+        })
+        self.hotkeyManager = HotkeyManager { [weak panelController, weak hotkeySettings = self.hotkeySettings] in
+            guard hotkeySettings?.isRecording == false else { return }
             panelController?.toggle()
         }
 
         configureStatusItem()
         observeHotkeySettings()
         clipboardMonitor?.start()
-        registerCurrentHotkey()
     }
 
     func applicationWillTerminate(_ notification: Notification) {
         clipboardMonitor?.stop()
-        hotkeyManager?.unregister()
-        hotkeySettingsCancellable?.cancel()
+        hotkeyRegistrationController?.stop()
     }
 
     private func configureStatusItem() {
@@ -125,17 +123,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func observeHotkeySettings() {
-        hotkeySettingsCancellable = hotkeySettings.$settingsVersion
-            .dropFirst()
-            .sink { [weak self] _ in
-                Task { @MainActor in
-                    self?.registerCurrentHotkey()
-                }
-            }
-    }
-
-    private func registerCurrentHotkey() {
-        updateHotkeyStatus(hotkeyManager?.register(shortcuts: hotkeySettings.selectedShortcuts))
+        guard let hotkeyManager else { return }
+        hotkeyRegistrationController = HotkeyRegistrationController(settings: hotkeySettings, registrar: hotkeyManager) { [weak self] status in
+            self?.updateHotkeyStatus(status)
+        }
     }
 
     private func presentUpdateResult(_ result: Result<UpdateCheckResult, Error>) {

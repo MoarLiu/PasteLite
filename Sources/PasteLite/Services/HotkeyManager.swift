@@ -1,5 +1,6 @@
 import AppKit
 import Carbon
+import Combine
 
 struct HotkeyShortcut: Equatable {
     var id: String
@@ -85,6 +86,7 @@ struct HotkeyRegistrationFailure: Equatable {
 
 enum HotkeyRegistrationStatus: Equatable {
     case disabled
+    case recording
     case registered(HotkeyShortcut)
     case failed([HotkeyRegistrationFailure])
     case eventHandlerFailed(OSStatus)
@@ -93,6 +95,8 @@ enum HotkeyRegistrationStatus: Equatable {
         switch self {
         case .disabled:
             return "Hotkey: Disabled"
+        case .recording:
+            return "Hotkey: Paused while recording"
         case let .registered(shortcut):
             return "Hotkey: \(shortcut.title)"
         case let .failed(failures):
@@ -107,7 +111,47 @@ enum HotkeyRegistrationStatus: Equatable {
 }
 
 @MainActor
-final class HotkeyManager {
+protocol HotkeyRegistering: AnyObject {
+    func register(shortcuts: [HotkeyShortcut]) -> HotkeyRegistrationStatus
+    func unregister()
+}
+
+@MainActor
+final class HotkeyRegistrationController {
+    private let settings: HotkeySettingsStore
+    private let registrar: any HotkeyRegistering
+    private let onStatus: (HotkeyRegistrationStatus) -> Void
+    private var settingsCancellable: AnyCancellable?
+
+    init(settings: HotkeySettingsStore, registrar: any HotkeyRegistering,
+         onStatus: @escaping (HotkeyRegistrationStatus) -> Void) {
+        self.settings = settings
+        self.registrar = registrar
+        self.onStatus = onStatus
+        settingsCancellable = settings.$settingsVersion.dropFirst().sink { [weak self] _ in
+            self?.refresh()
+        }
+        refresh()
+    }
+
+    func stop() {
+        settingsCancellable?.cancel()
+        settingsCancellable = nil
+        registrar.unregister()
+    }
+
+    private func refresh() {
+        if settings.isRecording {
+            registrar.unregister()
+            onStatus(.recording)
+        } else {
+            onStatus(registrar.register(shortcuts: settings.selectedShortcuts))
+        }
+    }
+}
+
+@MainActor
+final class HotkeyManager: HotkeyRegistering {
     private static let signature = OSType(0x504C_5445)
     private static var current: HotkeyManager?
     private static var eventHandlerInstalled = false
@@ -190,7 +234,8 @@ final class HotkeyManager {
                 }
 
                 Task { @MainActor in
-                    HotkeyManager.current?.callback()
+                    guard let manager = HotkeyManager.current, manager.hotKeyRef != nil else { return }
+                    manager.callback()
                 }
                 return noErr
             },

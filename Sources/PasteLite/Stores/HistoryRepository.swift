@@ -33,6 +33,7 @@ actor HistoryRepository {
     private var didOpen = false
     private var items: [ClipboardItem] = []
     private var revision = 0
+    private var captureGeneration = 0
     private var storageWarning: String?
     private var errorMessage: String?
 
@@ -45,7 +46,10 @@ actor HistoryRepository {
         guard !didOpen else { return }
         didOpen = true
         do {
-            let database = try SQLiteDatabase(url: databaseURL)
+            let database = try SQLiteDatabase(
+                url: databaseURL,
+                privateDirectory: databaseURL == PasteLiteDatabasePaths.historyDatabaseURL
+            )
             try Self.migrate(database)
             self.database = database
         } catch {
@@ -67,7 +71,11 @@ actor HistoryRepository {
         return snapshot()
     }
 
-    func add(_ item: ClipboardItem) -> HistoryMutation {
+    func add(_ item: ClipboardItem, captureGeneration generation: Int? = nil) -> HistoryMutation {
+        // Check on the SQLite actor too: a capture may already be queued when Clear runs.
+        if let generation, generation < captureGeneration {
+            return HistoryMutation(result: .success, snapshot: snapshot())
+        }
         openIfNeeded()
         guard item.hasLoadedAssets, !item.assets.isEmpty else {
             let message = "Could not save a clipboard item without its original data."
@@ -116,7 +124,8 @@ actor HistoryRepository {
         return HistoryMutation(result: .success, snapshot: snapshot())
     }
 
-    func clear() -> HistoryMutation {
+    func clear(captureGeneration generation: Int? = nil) -> HistoryMutation {
+        captureGeneration = generation.map { max(captureGeneration, $0) } ?? (captureGeneration + 1)
         openIfNeeded()
         if let database {
             do {

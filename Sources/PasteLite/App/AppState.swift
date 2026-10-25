@@ -9,6 +9,7 @@ final class AppState: ObservableObject {
     @Published var pasteTargetName: String?
     @Published var isPerformingClipboardAction = false
     @Published private(set) var presentationVersion = 0
+    @Published private(set) var keyboardSelectionVersion = 0
     private var statusClearTask: Task<Void, Never>?
 
     func prepareForPresentation() {
@@ -86,6 +87,7 @@ final class AppState: ObservableObject {
         } ?? 0
         let targetIndex = min(max(currentIndex + delta, 0), items.count - 1)
         selectedItemID = items[targetIndex].id
+        keyboardSelectionVersion += 1
     }
 }
 
