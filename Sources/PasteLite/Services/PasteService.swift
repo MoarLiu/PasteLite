@@ -26,15 +26,16 @@ final class PasteService {
     }
 
     @discardableResult
-    func copyToClipboard(_ item: ClipboardItem) async -> PasteServiceResult {
+    func copyToClipboard(_ item: ClipboardItem, plainText: Bool = false) async -> PasteServiceResult {
         let changeCount = pasteboard.changeCount
         do {
             let loaded = try await resolve(item)
+            let prepared = try await prepare(loaded, plainText: plainText)
             try Task.checkCancellation()
             guard pasteboard.changeCount == changeCount else {
                 return .failure("The clipboard changed while loading this item. Please copy it again.")
             }
-            return write(loaded)
+            return write(prepared)
         } catch is CancellationError {
             return .failure("Copy cancelled.")
         } catch {
@@ -44,7 +45,7 @@ final class PasteService {
 
     @discardableResult
     func paste(_ item: ClipboardItem, into previousApp: NSRunningApplication?,
-               beforeActivation: @MainActor () -> Void = {}) async -> PasteServiceResult {
+               plainText: Bool = false, beforeActivation: @MainActor () -> Void = {}) async -> PasteServiceResult {
         guard let target = previousApp, !environment.isTerminated(target),
               target.processIdentifier != environment.ownProcessIdentifier else {
             return .failure("The target app is unavailable. Open history from the app you want to paste into.")
@@ -57,13 +58,14 @@ final class PasteService {
         let originalChangeCount = pasteboard.changeCount
         do {
             let loaded = try await resolve(item)
+            let prepared = try await prepare(loaded, plainText: plainText)
             try Task.checkCancellation()
             guard !environment.isTerminated(target),
                   environment.frontmostProcessIdentifier == startingPID,
                   pasteboard.changeCount == originalChangeCount else {
                 return .failure("The active app or clipboard changed. Paste was cancelled.")
             }
-            let result = write(loaded)
+            let result = write(prepared)
             guard result.isSuccess else { return result }
             let writtenChangeCount = pasteboard.changeCount
             beforeActivation()
@@ -106,8 +108,33 @@ final class PasteService {
         }
     }
 
+    func copyString(_ string: String) -> PasteServiceResult {
+        write(ClipboardItem(title: string, kind: .text, contentHash: "",
+                            previewText: string, assets: [.init(index: 0, pasteboardType: .string, data: Data(string.utf8))]))
+    }
+
+    private func prepare(_ item: ClipboardItem, plainText: Bool) async throws -> ClipboardItem {
+        guard !item.isExpired else { throw HistoryItemLoadError.unavailable }
+        guard plainText else { return item }
+        let conversion = Task.detached(priority: .userInitiated) { Self.plainTextItem(item) }
+        let prepared = await withTaskCancellationHandler { await conversion.value } onCancel: { conversion.cancel() }
+        try Task.checkCancellation()
+        guard !prepared.isExpired else { throw HistoryItemLoadError.unavailable }
+        return prepared
+    }
+
+    nonisolated private static func plainTextItem(_ item: ClipboardItem) -> ClipboardItem {
+        let text = ClipboardTextRepresentation.string(in: item.assets)
+            ?? ([.color, .file].contains(item.kind) ? item.previewText : nil)
+        guard let text else { return item }
+        var result = item
+        result.assets = [.init(index: 0, pasteboardType: .string, data: Data(text.utf8))]
+        return result
+    }
+
     private func resolve(_ item: ClipboardItem) async throws -> ClipboardItem {
         try Task.checkCancellation()
+        guard !item.isExpired else { throw HistoryItemLoadError.unavailable }
         if item.hasLoadedAssets { return item }
         guard let historyStore else { throw HistoryItemLoadError.unavailable }
         return try await historyStore.resolve(item)
@@ -153,6 +180,13 @@ final class PasteService {
             }
             groupedItems[asset.index] = pasteboardItem
         }
+        if item.kind == .concealed {
+            for pasteboardItem in groupedItems.values {
+                guard pasteboardItem.setString("1", forType: .concealed) else {
+                    return ([], .failure("Could not preserve concealed content protection."))
+                }
+            }
+        }
 
         let items = groupedItems.keys.sorted().compactMap { groupedItems[$0] }
         guard !items.isEmpty else {
@@ -164,7 +198,7 @@ final class PasteService {
 
 }
 
-private struct PasteboardSnapshot {
+struct PasteboardSnapshot {
     private static let restorableTypes = Set(NSPasteboard.PasteboardType.pasteLiteReadableTypes)
     private static let maxTypeByteCount = 20 * 1024 * 1024
     private static let maxSnapshotByteCount = 64 * 1024 * 1024
@@ -221,7 +255,7 @@ private struct PasteboardSnapshot {
     }
 
     private static func shouldRestore(_ type: NSPasteboard.PasteboardType) -> Bool {
-        restorableTypes.contains(type) && !type.isPasteLiteIgnored
+        restorableTypes.contains(type) || [.concealed, .transient, .autoGenerated].contains(type)
     }
 
     private static func canAdd(_ data: Data, totalByteCount: inout Int) -> Bool {

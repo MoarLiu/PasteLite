@@ -1,6 +1,24 @@
 import AppKit
 import Foundation
 
+enum CodeDetector {
+    static func language(for text: String) -> String? {
+        let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if text.hasPrefix("ssh ") || text.hasPrefix("curl ") || text.hasPrefix("#!/") ||
+            text.hasPrefix("git ") || text.hasPrefix("npm ") { return "Shell" }
+        if text.contains("import SwiftUI") || text.contains("func ") && text.contains("{") ||
+            text.contains("let ") && text.contains(" = ") && text.contains("\n") { return "Swift" }
+        if text.contains("const ") && text.contains("=") || text.contains("function ") { return "JavaScript" }
+        if text.contains("def ") && text.contains(":") || text.contains("import ") && text.contains("\n") { return "Python" }
+        if (text.hasPrefix("{") && text.hasSuffix("}")) || (text.hasPrefix("[") && text.hasSuffix("]")) {
+            if (try? JSONSerialization.jsonObject(with: Data(text.utf8))) != nil { return "JSON" }
+        }
+        if text.hasPrefix("SELECT ") || text.hasPrefix("CREATE TABLE ") { return "SQL" }
+        if text.hasPrefix("<") && text.contains("</") { return "HTML" }
+        return nil
+    }
+}
+
 enum URLDetector {
     static func isLikelyURL(_ text: String) -> Bool {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)

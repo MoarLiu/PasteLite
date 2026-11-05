@@ -8,12 +8,14 @@ final class AppState: ObservableObject {
     @Published var statusMessage: String?
     @Published var pasteTargetName: String?
     @Published var isPerformingClipboardAction = false
+    @Published var actionsPresented = false
     @Published private(set) var presentationVersion = 0
     @Published private(set) var keyboardSelectionVersion = 0
     private var statusClearTask: Task<Void, Never>?
 
     func prepareForPresentation() {
         searchText = ""
+        actionsPresented = false
         selectedItemID = nil
         clearStatus()
         presentationVersion += 1
@@ -51,6 +53,9 @@ final class AppState: ObservableObject {
             return item.title.localizedCaseInsensitiveContains(query) ||
                 item.previewText.localizedCaseInsensitiveContains(query) ||
                 (item.sourceAppName?.localizedCaseInsensitiveContains(query) ?? false)
+        }.sorted {
+            if $0.isPinned != $1.isPinned { return $0.isPinned }
+            return $0.copiedAt > $1.copiedAt
         }
     }
 
@@ -91,13 +96,15 @@ final class AppState: ObservableObject {
     }
 }
 
-private extension HistoryFilter {
+extension HistoryFilter {
     func matches(_ item: ClipboardItem) -> Bool {
         switch self {
         case .all:
             return true
+        case .pinned:
+            return item.isPinned
         case .text:
-            return item.kind == .text
+            return [.text, .code, .concealed].contains(item.kind)
         case .image:
             return item.kind == .image
         case .file:

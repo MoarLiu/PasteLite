@@ -1,392 +1,222 @@
+import AppKit
 import SwiftUI
 
 struct HistoryPanelView: View {
     @ObservedObject var appState: AppState
     @ObservedObject var historyStore: SQLiteHistoryStore
-
+    @ObservedObject var preferences = AppPreferences.shared
+    @ObservedObject var hotkeySettings = HotkeySettingsStore.shared
     let onCopy: (ClipboardItem) -> Void
     let onPaste: (ClipboardItem) -> Void
     let onRemove: (ClipboardItem) -> Void
     let onClear: () -> Void
     let onDismiss: () -> Void
-
+    var onPin: (ClipboardItem) -> Void = { _ in }
+    var onUndo: () -> Void = {}
+    var onCopyText: (String) -> Void = { _ in }
     @FocusState private var searchFocused: Bool
-
-    private var filteredItems: [ClipboardItem] {
-        appState.filteredItems(in: historyStore.items)
-    }
-
-    private var sections: [HistoryDateSection] {
-        HistoryDateSection.sections(for: filteredItems)
-    }
-
-    private var selectedItem: ClipboardItem? {
-        appState.selectedItem(in: filteredItems)
-    }
+    private var filteredItems: [ClipboardItem] { appState.filteredItems(in: historyStore.items) }
+    private var selectedItem: ClipboardItem? { appState.selectedItem(in: filteredItems) }
 
     var body: some View {
         VStack(spacing: 0) {
-            toolbar
+            header
             if let message = historyStore.captureErrorMessage ?? historyStore.errorMessage ?? historyStore.storageWarning {
-                Label(message, systemImage: "exclamationmark.triangle")
-                    .font(.caption)
-                    .foregroundStyle(.orange)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 20)
-                    .padding(.bottom, 8)
+                banner(message, symbol: "exclamationmark.triangle", color: .orange)
+            }
+            if !AccessibilityService.isTrusted(), preferences.selectionAction == .paste {
+                HStack {
+                    Label("Allow Accessibility to paste directly. Items can still be copied.", systemImage: "hand.raised")
+                    Spacer()
+                    Button("Open Settings") { AccessibilityService.openSettings() }
+                }
+                .font(.system(size: 11)).padding(.horizontal, 16).padding(.vertical, 8)
+                .background(Color.orange.opacity(0.09))
             }
             Divider()
             HStack(spacing: 0) {
-                list
-                Divider()
-                DetailView(item: selectedItem, historyStore: historyStore)
+                historyList.frame(width: preferences.showPreview ? PL.Size.listColumnWidth : nil)
+                if preferences.showPreview {
+                    Divider()
+                    DetailView(item: selectedItem, historyStore: historyStore,
+                               onCopy: onCopy, onPin: onPin, onCopyText: onCopyText)
+                        .id(appState.presentationVersion)
+                        .frame(width: 880 - PL.Size.listColumnWidth - 1)
+                }
             }
+            .frame(maxHeight: .infinity)
             Divider()
             footer
         }
-        .frame(minWidth: 700, minHeight: 420)
-        .background(panelBackground)
+        .frame(width: preferences.showPreview ? 880 : 520, height: 560)
+        .background(VisualEffect())
         .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .stroke(Color.white.opacity(0.45), lineWidth: 1)
-        )
-        .onAppear {
-            searchFocused = true
-            appState.normalizeSelection(in: filteredItems)
-        }
-        .onChange(of: historyStore.items) { _ in
-            appState.normalizeSelection(in: filteredItems)
-        }
-        .onChange(of: appState.searchText) { _ in
-            appState.normalizeSelection(in: filteredItems)
-        }
-        .onChange(of: appState.selectedFilter) { _ in
-            appState.normalizeSelection(in: filteredItems)
-        }
-        .onChange(of: appState.presentationVersion) { _ in
-            searchFocused = true
-            appState.normalizeSelection(in: filteredItems)
-        }
-        .onExitCommand {
-            onDismiss()
-        }
+        .overlay(RoundedRectangle(cornerRadius: 18).strokeBorder(Color.primary.opacity(0.12), lineWidth: 0.5))
+        .ignoresSafeArea()
+        .accentColor(preferences.accent.color)
+        .onAppear { normalize(); searchFocused = true }
+        .onChange(of: historyStore.items) { _ in normalize() }
+        .onChange(of: appState.searchText) { _ in normalize() }
+        .onChange(of: appState.selectedFilter) { _ in normalize() }
+        .onChange(of: appState.presentationVersion) { _ in searchFocused = true; normalize() }
     }
 
-    private var toolbar: some View {
-        HStack(spacing: 16) {
-            TextField("Type to filter entries...", text: $appState.searchText)
-                .textFieldStyle(.plain)
-                .font(.system(size: 18, weight: .regular))
-                .focused($searchFocused)
-
-            Picker("", selection: $appState.selectedFilter) {
-                ForEach(HistoryFilter.allCases) { filter in
-                    Text(filter.title).tag(filter)
+    private var header: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 10) {
+                Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+                TextField("Search clipboard history", text: $appState.searchText)
+                    .textFieldStyle(.plain).font(PL.Font.search).focused($searchFocused)
+                    .accessibilityLabel("Search clipboard history")
+                if !appState.searchText.isEmpty {
+                    Button { appState.searchText = "" } label: { Image(systemName: "xmark.circle.fill") }
+                        .buttonStyle(.plain).foregroundStyle(.secondary).help("Clear search")
                 }
-            }
-            .labelsHidden()
-            .controlSize(.regular)
-            .frame(width: 156)
+                Text("\(filteredItems.count) items").font(.system(size: 11.5)).foregroundStyle(.secondary)
+            }.padding(.horizontal, 18).frame(height: 52)
+            HStack(spacing: 4) {
+                ForEach(HistoryFilter.allCases) { filter in
+                    let count = historyStore.items.filter { filter.matches($0) }.count
+                    Button { appState.selectedFilter = filter } label: {
+                        HStack(spacing: 4) {
+                            Text(filter.title).fontWeight(appState.selectedFilter == filter ? .medium : .regular)
+                            Text("\(count)").opacity(0.65)
+                        }
+                        .font(.system(size: 11.5)).padding(.horizontal, 9).padding(.vertical, 5)
+                        .foregroundColor(appState.selectedFilter == filter ? .white : .secondary)
+                        .background(appState.selectedFilter == filter ? Color.accentColor : .clear, in: Capsule())
+                    }.buttonStyle(.plain).accessibilityLabel("\(filter.title), \(count) items")
+                }
+                Spacer(minLength: 0)
+                if preferences.showPreview { KeyCap("⇥"); Text("switch type").font(.system(size: 11)).foregroundStyle(.tertiary) }
+            }.padding(.horizontal, 12).padding(.bottom, 10)
         }
-        .padding(.horizontal, 20)
-        .padding(.vertical, 12)
     }
 
-    private var panelBackground: some View {
-        ZStack {
-            Rectangle()
-                .fill(.regularMaterial)
-            Rectangle()
-                .fill(Color.white.opacity(0.34))
-        }
-    }
-
-    private var list: some View {
-        let displayedSections = sections
-        let selectedID = selectedItem?.id
-        return VStack(alignment: .leading, spacing: 0) {
-            HStack {
-                Text(filteredItems.isEmpty ? "History" : displayedSections.first?.title ?? "History")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(.secondary)
-                Spacer()
-            }
-            .padding(.horizontal, 16)
-            .padding(.top, 10)
-            .padding(.bottom, 6)
-
+    private var historyList: some View {
+        Group {
             if historyStore.isLoading {
-                ProgressView("Loading history…")
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                ProgressView("Loading history…").frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if filteredItems.isEmpty {
-                emptyList
+                VStack(spacing: 10) {
+                    Image(systemName: appState.searchText.isEmpty ? "tray" : "magnifyingglass").font(.system(size: 28)).foregroundStyle(.tertiary)
+                    Text(historyStore.items.isEmpty ? "Your clipboard, remembered" : "No matching items").font(PL.Font.titleLarge)
+                    Text(historyStore.items.isEmpty ? "Copy something to get started. It will appear here automatically." : "Try another search or show all your clipboard history.")
+                        .font(.system(size: 12)).foregroundStyle(.secondary).multilineTextAlignment(.center)
+                    if !historyStore.items.isEmpty {
+                        Button("Show All Items") { appState.searchText = ""; appState.selectedFilter = .all }
+                    }
+                    if preferences.recordingPaused { Button("Resume Recording") { preferences.recordingPaused = false } }
+                }.padding(28).frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 ScrollViewReader { proxy in
                     ScrollView {
-                        LazyVStack(alignment: .leading, spacing: 4) {
-                            ForEach(displayedSections) { section in
-                                Section {
-                                    ForEach(section.items) { item in
-                                        row(for: item, selectedID: selectedID)
-                                            .id(item.id)
-                                    }
-                                } header: {
-                                    if section.id != displayedSections.first?.id {
-                                        Text(section.title)
-                                            .font(.system(size: 11, weight: .semibold))
-                                            .foregroundStyle(.secondary)
-                                            .padding(.horizontal, 8)
-                                            .padding(.top, 8)
-                                    }
+                        LazyVStack(alignment: .leading, spacing: 2) {
+                            ForEach(Array(filteredItems.enumerated()), id: \.element.id) { index, item in
+                                if let title = sectionTitle(at: index) {
+                                    HStack(spacing: 5) {
+                                        if item.isPinned { Image(systemName: "pin.fill").font(.system(size: 9)) }
+                                        Text(title)
+                                    }.font(.system(size: 11.5, weight: .medium)).foregroundStyle(.secondary)
+                                        .padding(.horizontal, 8).padding(.top, 12).padding(.bottom, 5)
                                 }
+                                HistoryRowView(item: item, isSelected: selectedItem?.id == item.id,
+                                               historyStore: historyStore, shortcut: index < 9 ? index + 1 : nil,
+                                               query: appState.searchText)
+                                    .id(item.id).contentShape(Rectangle())
+                                    .onTapGesture(count: 2) { appState.selectedItemID = item.id; onPaste(item) }
+                                    .onTapGesture { appState.selectedItemID = item.id }
+                                    .contextMenu { itemActions(item) }
                             }
-                        }
-                        .padding(.horizontal, 8)
-                        .padding(.bottom, 12)
+                        }.padding(.horizontal, 8).padding(.bottom, 10)
                     }
-                    .onAppear {
-                        if let selectedID { proxy.scrollTo(selectedID, anchor: .center) }
-                    }
-                    .onChange(of: appState.keyboardSelectionVersion) { _ in
-                        if let id = appState.selectedItemID { proxy.scrollTo(id, anchor: .center) }
-                    }
-                    .onChange(of: appState.searchText) { _ in
-                        if let id = selectedItem?.id { proxy.scrollTo(id, anchor: .center) }
-                    }
-                    .onChange(of: appState.selectedFilter) { _ in
-                        if let id = selectedItem?.id { proxy.scrollTo(id, anchor: .center) }
-                    }
-                    .onChange(of: appState.presentationVersion) { _ in
-                        if let firstID = filteredItems.first?.id { proxy.scrollTo(firstID, anchor: .top) }
-                    }
+                    .onAppear { scroll(proxy) }
+                    .onChange(of: appState.keyboardSelectionVersion) { _ in scroll(proxy) }
+                    .onChange(of: appState.searchText) { _ in scroll(proxy) }
+                    .onChange(of: appState.selectedFilter) { _ in scroll(proxy) }
+                    .onChange(of: appState.presentationVersion) { _ in scroll(proxy) }
                 }
-            }
-        }
-        .frame(width: 300)
-    }
-
-    private var emptyList: some View {
-        VStack(spacing: 8) {
-            Image(systemName: "tray")
-                .font(.system(size: 22, weight: .medium))
-            Text("No Items")
-                .font(.system(size: 13, weight: .semibold))
-            Text(appState.searchText.isEmpty ? "Clipboard history is empty." : "No history items match this filter.")
-                .font(.system(size: 11))
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-        }
-        .foregroundStyle(.secondary)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .padding(24)
-    }
-
-    private func row(for item: ClipboardItem, selectedID: ClipboardItem.ID?) -> some View {
-        HistoryRowView(
-            item: item,
-            isSelected: selectedID == item.id,
-            historyStore: historyStore
-        )
-        .contentShape(Rectangle())
-        .onTapGesture {
-            searchFocused = false
-            appState.selectedItemID = item.id
-        }
-        .onTapGesture(count: 2) {
-            onPaste(item)
-        }
-        .contextMenu {
-            Button {
-                onCopy(item)
-            } label: {
-                Label("Copy to Clipboard", systemImage: "doc.on.doc")
-            }
-
-            Button {
-                onPaste(item)
-            } label: {
-                Label("Paste", systemImage: "arrow.down.doc")
-            }
-
-            Divider()
-
-            Button(role: .destructive) {
-                onRemove(item)
-            } label: {
-                Label("Delete", systemImage: "trash")
             }
         }
     }
 
     private var footer: some View {
         HStack(spacing: 10) {
-            if appState.isPerformingClipboardAction {
-                ProgressView()
-                    .controlSize(.small)
-                Text("Preparing clipboard item…")
-                    .font(.system(size: 12))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            } else if let statusMessage = appState.statusMessage {
-                Label(statusMessage, systemImage: "info.circle")
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            } else {
-                HStack(spacing: 10) {
-                    ZStack {
-                        RoundedRectangle(cornerRadius: 8, style: .continuous)
-                            .fill(Color.red.opacity(0.9))
-                        Image(systemName: "clipboard")
-                            .font(.system(size: 12, weight: .semibold))
-                            .foregroundStyle(.white)
-                    }
-                    .frame(width: 22, height: 22)
-
-                    Text("Clipboard History")
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(.secondary)
-                }
+            if historyStore.deletedItem != nil {
+                Text("Item deleted").font(.system(size: 11.5)).foregroundStyle(.secondary)
+                Button("Undo ⌘Z", action: onUndo).buttonStyle(.plain).foregroundColor(.accentColor)
+            } else if appState.isPerformingClipboardAction {
+                ProgressView().controlSize(.small)
+                Text("Preparing…").font(.system(size: 11.5)).foregroundStyle(.secondary)
+            } else if let message = appState.statusMessage {
+                Text(message).font(.system(size: 11.5)).foregroundStyle(.secondary).lineLimit(1).help(message)
+            } else if preferences.showPreview {
+                AppIconView(size: 23)
+                Text("Clipboard History").font(.system(size: 12)).foregroundStyle(.secondary)
+                KeyCap(hotkeySettings.activeShortcut?.displayTitle ?? "No shortcut")
             }
-            Spacer()
-
-            footerActionButton(
-                title: pasteTitle,
-                systemImage: "arrow.down.doc",
-                isDisabled: selectedItem == nil || appState.isPerformingClipboardAction
-            ) {
-                if let selectedItem {
-                    onPaste(selectedItem)
-                }
+            Spacer(minLength: 0)
+            if preferences.showPreview {
+                Button { if let item = selectedItem { onCopy(item) } } label: {
+                    HStack(spacing: 5) { Text("Copy"); KeyCap("⌘ C") }
+                }.buttonStyle(.plain).disabled(selectedItem == nil || appState.isPerformingClipboardAction)
             }
-
-            Divider()
-                .frame(height: 22)
-
-            footerActionButton(
-                title: "Copy",
-                systemImage: "doc.on.doc",
-                shortcut: "↵",
-                isDisabled: selectedItem == nil || appState.isPerformingClipboardAction
-            ) {
-                if let selectedItem {
-                    onCopy(selectedItem)
-                }
+            Button { if let item = selectedItem { onPaste(item) } } label: {
+                HStack(spacing: 6) { Text(primaryTitle); Text("↩").opacity(0.8) }
+                    .font(.system(size: 12.5, weight: .medium)).foregroundColor(.white)
+                    .padding(.horizontal, 13).padding(.vertical, 7)
+                    .background(preferences.accent.color, in: RoundedRectangle(cornerRadius: 8))
+                    .opacity(selectedItem == nil || appState.isPerformingClipboardAction ? 0.45 : 1)
             }
-
-            footerActionButton(
-                title: "Delete",
-                systemImage: "trash",
-                isDestructive: true,
-                isDisabled: selectedItem == nil || appState.isPerformingClipboardAction
-            ) {
-                if let selectedItem {
-                    onRemove(selectedItem)
-                }
+            .buttonStyle(.plain).disabled(selectedItem == nil || appState.isPerformingClipboardAction)
+            Divider().frame(height: 22)
+            Button { appState.actionsPresented.toggle() } label: {
+                HStack(spacing: 5) { Text("Actions"); KeyCap("⌘ K") }
             }
-
-            footerActionButton(
-                title: "Clear All",
-                systemImage: "trash.slash",
-                isDestructive: true,
-                isDisabled: historyStore.items.isEmpty || appState.isPerformingClipboardAction
-            ) {
-                onClear()
+            .buttonStyle(.plain)
+            .popover(isPresented: $appState.actionsPresented, arrowEdge: .bottom) {
+                VStack(alignment: .leading, spacing: 5) {
+                    Text("ACTIONS").font(.system(size: 10, weight: .semibold)).foregroundStyle(.secondary).padding(6)
+                    if let item = selectedItem { itemActions(item) }
+                    Divider()
+                    Button("Clear History…", action: onClear).foregroundColor(.red).disabled(historyStore.items.allSatisfy(\.isPinned))
+                }.buttonStyle(.borderless).padding(12).frame(width: 240).accentColor(preferences.accent.color)
             }
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 8)
-        .background(Color.white.opacity(0.28))
+        .font(.system(size: 12)).padding(.horizontal, 14).frame(height: 50)
+        .background(Color.primary.opacity(0.025))
     }
 
-    private var pasteTitle: String {
-        if let appName = appState.pasteTargetName, !appName.isEmpty {
-            return "Paste to \(appName)"
+    @ViewBuilder private func itemActions(_ item: ClipboardItem) -> some View {
+        Button("Copy to Clipboard    ⌘C") { appState.actionsPresented = false; onCopy(item) }
+        Button("\(primaryTitle)    ↩") { appState.actionsPresented = false; onPaste(item) }
+        Button(item.isPinned ? "Unpin Item    ⇧⌘P" : "Pin Item    ⇧⌘P") { appState.actionsPresented = false; onPin(item) }
+        if item.kind == .link, let url = URL(string: item.previewText), ["https", "http"].contains(url.scheme?.lowercased() ?? "") {
+            Button("Open Link") { NSWorkspace.shared.open(url) }
         }
-        return "Paste"
+        Divider()
+        Button("Delete Item    ⌘⌫", role: .destructive) { appState.actionsPresented = false; onRemove(item) }
     }
-
-    private func keyCap(_ text: String) -> some View {
-        Text(text)
-            .font(.system(size: 11, weight: .semibold))
-            .foregroundStyle(.secondary)
-            .frame(minWidth: 20, minHeight: 18)
-            .padding(.horizontal, 2)
-            .background(Color.primary.opacity(0.08), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+    private var primaryTitle: String {
+        if preferences.selectionAction == .copy || !AccessibilityService.isTrusted() { return "Copy to Clipboard" }
+        if preferences.plainText { return "Paste as Plain Text" }
+        return appState.pasteTargetName.map { "Paste to \($0)" } ?? "Paste"
     }
-
-    private func footerActionButton(
-        title: String,
-        systemImage: String,
-        shortcut: String? = nil,
-        isDestructive: Bool = false,
-        isDisabled: Bool = false,
-        action: @escaping () -> Void
-    ) -> some View {
-        Button(action: action) {
-            HStack(spacing: 6) {
-                Image(systemName: systemImage)
-                    .font(.system(size: 11, weight: .semibold))
-                Text(title)
-                    .font(.system(size: 12, weight: .semibold))
-                    .lineLimit(1)
-                if let shortcut {
-                    keyCap(shortcut)
-                }
-            }
-            .foregroundStyle(isDestructive ? Color.red : Color.primary)
-            .opacity(isDisabled ? 0.45 : 1)
-            .padding(.horizontal, 7)
-            .padding(.vertical, 4)
-            .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-        }
-        .buttonStyle(.plain)
-        .disabled(isDisabled)
+    private func normalize() { appState.normalizeSelection(in: filteredItems) }
+    private func scroll(_ proxy: ScrollViewProxy) { if let id = selectedItem?.id { proxy.scrollTo(id, anchor: .center) } }
+    private func banner(_ message: String, symbol: String, color: Color) -> some View {
+        Label(message, systemImage: symbol).font(.system(size: 11)).foregroundColor(color)
+            .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 16).padding(.vertical, 6)
     }
-}
-
-private struct HistoryDateSection: Identifiable {
-    let day: Date
-    let title: String
-    var items: [ClipboardItem]
-
-    var id: TimeInterval { day.timeIntervalSinceReferenceDate }
-
-    static func sections(
-        for items: [ClipboardItem],
-        calendar: Calendar = .autoupdatingCurrent
-    ) -> [HistoryDateSection] {
-        let sortedItems = items.sorted { $0.copiedAt > $1.copiedAt }
-        var sections: [HistoryDateSection] = []
-
-        for item in sortedItems {
-            let day = calendar.startOfDay(for: item.copiedAt)
-            if let index = sections.firstIndex(where: { calendar.isDate($0.day, inSameDayAs: day) }) {
-                sections[index].items.append(item)
-            } else {
-                sections.append(
-                    HistoryDateSection(
-                        day: day,
-                        title: title(for: day, calendar: calendar),
-                        items: [item]
-                    )
-                )
-            }
+    private func sectionTitle(at index: Int) -> String? {
+        let item = filteredItems[index]
+        func title(_ item: ClipboardItem) -> String {
+            if item.isPinned { return "Pinned" }
+            if Calendar.current.isDateInToday(item.copiedAt) { return "Today" }
+            if Calendar.current.isDateInYesterday(item.copiedAt) { return "Yesterday" }
+            return "Earlier"
         }
-
-        return sections
-    }
-
-    private static func title(for day: Date, calendar: Calendar) -> String {
-        if calendar.isDateInToday(day) {
-            return "Today"
-        }
-
-        if calendar.isDateInYesterday(day) {
-            return "Yesterday"
-        }
-
-        return DateFormatter.localizedString(from: day, dateStyle: .medium, timeStyle: .none)
+        let value = title(item)
+        return index == 0 || title(filteredItems[index - 1]) != value ? value : nil
     }
 }

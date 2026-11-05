@@ -41,6 +41,8 @@ final class ClipboardMonitor {
     private let processCapture: CaptureProcessor
     private var lastChangeCount: Int
     private let pasteboard: NSPasteboard
+    private let preferences: AppPreferences?
+    private let sourceApplication: () -> (String?, String?)
     private let pollInterval: TimeInterval = 0.5
     private let maxAssetByteCount = 20 * 1024 * 1024
     private let maxItemByteCount = 64 * 1024 * 1024
@@ -49,11 +51,17 @@ final class ClipboardMonitor {
 
     init(historyStore: any HistoryStore, pasteboard: NSPasteboard = .general,
          processCapture: @escaping CaptureProcessor = { $0.makeItem() },
-         onError: @escaping (String) -> Void = { _ in }) {
+         onError: @escaping (String) -> Void = { _ in }, preferences: AppPreferences? = nil,
+         sourceApplication: @escaping () -> (String?, String?) = {
+             let app = NSWorkspace.shared.frontmostApplication
+             return (app?.localizedName, app?.bundleIdentifier)
+         }) {
         self.onError = onError
         self.processCapture = processCapture
         self.historyStore = historyStore
         self.pasteboard = pasteboard
+        self.preferences = preferences
+        self.sourceApplication = sourceApplication
         self.lastChangeCount = pasteboard.changeCount
     }
 
@@ -79,20 +87,24 @@ final class ClipboardMonitor {
         let currentChangeCount = pasteboard.changeCount
         guard currentChangeCount != lastChangeCount else { return }
         lastChangeCount = currentChangeCount
+        guard preferences?.recordingPaused != true else { return }
 
         if PasteLitePasteboardWriteGuard.consumeIfSelfWrite(changeCount: currentChangeCount, on: pasteboard) {
             return
         }
 
         let rootTypes = Set(pasteboard.types ?? [])
-        guard !rootTypes.isDisjoint(with: supportedTypes),
-              !pasteboard.pasteLiteHasIgnoredTypes else {
+        let allTypes = rootTypes.union(pasteboard.pasteboardItems?.flatMap(\.types) ?? [])
+        let concealed = allTypes.contains(.concealed)
+        let ignored = NSPasteboard.PasteboardType.pasteLiteIgnoredTypes.subtracting(
+            preferences?.sensitivePolicy == .masked ? [.concealed] : []
+        )
+        guard !rootTypes.isDisjoint(with: supportedTypes), allTypes.isDisjoint(with: ignored) else {
             return
         }
 
-        let sourceApp = NSWorkspace.shared.frontmostApplication
-        let sourceName = sourceApp?.localizedName
-        let sourceIdentifier = sourceApp?.bundleIdentifier
+        let (sourceName, sourceIdentifier) = sourceApplication()
+        guard !((sourceIdentifier.map { preferences?.excludedApps.contains($0) == true }) ?? false) else { return }
         let copiedAt = Date()
         let generation = historyStore.captureGeneration
         let itemAssets: [ClipboardAsset]
@@ -129,7 +141,15 @@ final class ClipboardMonitor {
             }
             guard let self else { return }
             defer { self.captureTask = nil }
-            guard !Task.isCancelled, let item, let historyStore = self.historyStore else { return }
+            guard !Task.isCancelled, var item, let historyStore = self.historyStore,
+                  self.preferences?.recordingPaused != true,
+                  !(sourceIdentifier.map { self.preferences?.excludedApps.contains($0) == true } ?? false),
+                  !concealed || self.preferences?.sensitivePolicy == .masked else { return }
+            if concealed {
+                item.kind = .concealed
+                item.title = "Concealed content"
+                item.previewText = ""
+            }
             let result = await historyStore.addCaptured(item, generation: generation)
             if case let .failure(message) = result, !Task.isCancelled,
                historyStore.captureGeneration == generation {
@@ -197,9 +217,7 @@ enum ClipboardItemFactory {
     static func make(assets: [ClipboardAsset], nativeColorHex: String?, sourceAppName: String?,
                      sourceBundleIdentifier: String?, copiedAt: Date) -> ClipboardItem? {
         guard !Task.isCancelled, !assets.isEmpty else { return nil }
-        let textAsset = assets.first(where: { $0.pasteboardType == .string })
-            ?? assets.first(where: { $0.pasteboardType == .URL })
-        let text = textAsset.flatMap { String(data: $0.data, encoding: .utf8) } ?? ""
+        let text = ClipboardTextRepresentation.string(in: assets) ?? ""
         let kind: ClipboardKind
         let preview: String
         let title: String
@@ -207,7 +225,8 @@ enum ClipboardItemFactory {
             kind = .file
             let files = assets.filter { $0.pasteboardType == .fileURL }
             preview = files.compactMap { URL(dataRepresentation: $0.data, relativeTo: nil)?.path }.joined(separator: "\n")
-            title = files.count == 1 ? "File" : "\(files.count) Files"
+            let firstName = files.first.flatMap { URL(dataRepresentation: $0.data, relativeTo: nil)?.lastPathComponent } ?? "File"
+            title = files.count == 1 ? firstName : "\(firstName) and \(files.count - 1) more"
         } else if assets.contains(where: { NSPasteboard.PasteboardType.pasteLiteImageTypes.contains($0.pasteboardType) }) {
             kind = .image
             preview = text
@@ -218,6 +237,8 @@ enum ClipboardItemFactory {
                 kind = .color
             } else if URLDetector.isLikelyURL(text) {
                 kind = .link
+            } else if CodeDetector.language(for: text) != nil {
+                kind = .code
             } else {
                 kind = .text
             }

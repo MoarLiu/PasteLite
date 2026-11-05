@@ -25,7 +25,9 @@ enum ClipboardImageProcessor {
               let height = properties[kCGImagePropertyPixelHeight] as? NSNumber else {
             return "Image"
         }
-        return "Image (\(width.intValue)×\(height.intValue))"
+        let identifier = CGImageSourceGetType(source).map { $0 as String } ?? ""
+        let format = identifier.hasSuffix(".png") ? "PNG" : identifier.hasSuffix(".tiff") ? "TIFF" : "Image"
+        return "Image \(width.intValue) × \(height.intValue) · \(format)"
     }
 
     static func thumbnail(from data: Data, maxPixelSize: Int) -> ClipboardThumbnail? {

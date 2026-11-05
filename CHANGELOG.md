@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.3.0 - 2026-11-05
+
+Version 0.3.0 (build 30).
+
+- Redesigned the history panel, menu bar, settings, and app icon with light/dark themes and eight accent colors.
+- Added visible type filters, source app icons, richer previews, pinned items, usage counts, and a compact panel.
+- Added five-second delete undo and clear-history confirmation that keeps pinned items.
+- Made Return perform the selected paste/copy action, with Option-Return to reverse plain-text formatting, layered Escape, and inline shortcut hints.
+- Added recording pause, recent menu bar items, storage controls, excluded apps, and clear-on-quit.
+- Added masked concealed-content capture with 24-hour expiry and an option to skip it. Concealed copies retain their privacy marker, and delayed reveals cannot appear in another selection.
+- Made website metadata fetching opt-in; local link previews work without connecting to websites.
+- Added stable/Beta update checks, architecture-aware downloads, checksum and bundle validation, and installation rollback.
+- Prevented pending deletes or undo operations from bringing back cleared history and kept clear-on-quit pending through repeated quit requests.
+- Preserved rich text, native colors, and file paths when converting to plain text.
+
+Upgrade notes: existing history migrates in place. Return now pastes when permission is available; choose “Copy to clipboard” in General settings to retain copy-only behavior.
+
 ## 0.2.1 - 2026-10-25
 
 Version 0.2.1 (build 21).

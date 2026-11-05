@@ -66,17 +66,36 @@ struct UpdateChecker {
             if leftValue > rightValue { return .orderedDescending }
         }
 
+        let leftPrerelease = prerelease(lhs)
+        let rightPrerelease = prerelease(rhs)
+        if leftPrerelease == rightPrerelease { return .orderedSame }
+        if leftPrerelease.isEmpty { return .orderedDescending }
+        if rightPrerelease.isEmpty { return .orderedAscending }
+        for index in 0..<max(leftPrerelease.count, rightPrerelease.count) {
+            guard index < leftPrerelease.count else { return .orderedAscending }
+            guard index < rightPrerelease.count else { return .orderedDescending }
+            let left = leftPrerelease[index], right = rightPrerelease[index]
+            if left == right { continue }
+            if let a = Int(left), let b = Int(right) { return a < b ? .orderedAscending : .orderedDescending }
+            if Int(left) != nil { return .orderedAscending }
+            if Int(right) != nil { return .orderedDescending }
+            return left.compare(right, options: .literal)
+        }
         return .orderedSame
+    }
+
+    private static func prerelease(_ version: String) -> [String] {
+        let noBuild = version.split(separator: "+", maxSplits: 1).first.map(String.init) ?? version
+        let parts = noBuild.split(separator: "-", maxSplits: 1)
+        return parts.count == 2 ? parts[1].split(separator: ".").map(String.init) : []
     }
 
     private static func versionComponents(_ version: String) -> [Int] {
         version
             .trimmingCharacters(in: CharacterSet(charactersIn: "vV").union(.whitespacesAndNewlines))
-            .split(separator: ".")
-            .map { component in
-                let digits = component.prefix { $0.isNumber }
-                return Int(digits) ?? 0
-            }
+            .split(whereSeparator: { $0 == "-" || $0 == "+" }).first.map(String.init).map {
+                $0.split(separator: ".").map { Int($0.prefix { $0.isNumber }) ?? 0 }
+            } ?? []
     }
 }
 

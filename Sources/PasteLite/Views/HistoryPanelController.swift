@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import Combine
 
 @MainActor
 final class HistoryPanelController: NSWindowController {
@@ -10,6 +11,10 @@ final class HistoryPanelController: NSWindowController {
     private var isOrderingOut = false
     private(set) var clipboardActionTask: Task<Void, Never>?
     private var clipboardActionID: UUID?
+    private let preferences = AppPreferences.shared
+    private var preferenceObserver: AnyCancellable?
+    private var actionsObserver: AnyCancellable?
+    private var hud: NSPanel?
 
     private var currentItems: [ClipboardItem] {
         appState.filteredItems(in: historyStore.items)
@@ -25,8 +30,8 @@ final class HistoryPanelController: NSWindowController {
         self.pasteService = pasteService
 
         let panel = HistoryPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 860, height: 510),
-            styleMask: [.nonactivatingPanel, .titled, .fullSizeContentView, .resizable],
+            contentRect: NSRect(x: 0, y: 0, width: 880, height: 560),
+            styleMask: [.nonactivatingPanel, .titled, .fullSizeContentView],
             backing: .buffered,
             defer: false
         )
@@ -41,7 +46,7 @@ final class HistoryPanelController: NSWindowController {
                     self?.copyToClipboard(item)
                 },
                 onPaste: { [weak self] item in
-                    self?.paste(item)
+                    self?.performPrimaryAction(item)
                 },
                 onRemove: { [weak self] item in
                     self?.remove(item)
@@ -51,20 +56,37 @@ final class HistoryPanelController: NSWindowController {
                 },
                 onDismiss: { [weak self] in
                     self?.close()
+                },
+                onPin: { [weak self] item in self?.togglePin(item) },
+                onUndo: { [weak self] in self?.undoDelete() },
+                onCopyText: { [weak self] text in
+                    guard let self else { return }
+                    self.appState.apply(self.pasteService.copyString(text), successMessage: "Copied to clipboard.")
                 }
             )
         )
+        preferenceObserver = preferences.$showPreview.removeDuplicates().sink { [weak self] preview in
+            DispatchQueue.main.async { self?.resizePanel(preview: preview) }
+        }
+        actionsObserver = appState.$actionsPresented.removeDuplicates().dropFirst().sink { [weak self] presented in
+            guard !presented else { return }
+            DispatchQueue.main.async {
+                guard let self, let window = self.window, window.isVisible,
+                      !window.isKeyWindow, window.attachedSheet == nil else { return }
+                self.close()
+            }
+        }
     }
 
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
     }
 
-    func toggle(anchor: NSView? = nil) {
+    func toggle(anchor: NSView? = nil, target: NSRunningApplication? = nil) {
         if window?.isVisible == true {
             close()
         } else {
-            show(anchor: anchor)
+            show(anchor: anchor, target: target)
         }
     }
 
@@ -81,15 +103,28 @@ final class HistoryPanelController: NSWindowController {
         isOrderingOut = false
     }
 
-    private func show(anchor: NSView?) {
+    private func show(anchor: NSView?, target: NSRunningApplication?) {
         cancelClipboardAction()
-        let frontmostApp = NSWorkspace.shared.frontmostApplication
+        let frontmostApp = target ?? NSWorkspace.shared.frontmostApplication
         previousApp = frontmostApp?.processIdentifier == ProcessInfo.processInfo.processIdentifier ? nil : frontmostApp
         appState.pasteTargetName = previousApp?.localizedName
         appState.prepareForPresentation()
         position(anchor: anchor)
         window?.orderFrontRegardless()
         window?.makeKey()
+    }
+
+    func pasteFromMenu(_ item: ClipboardItem, target: NSRunningApplication?) {
+        previousApp = target
+        appState.pasteTargetName = target?.localizedName
+        performPrimaryAction(item)
+    }
+
+    private func resizePanel(preview: Bool) {
+        guard let window else { return }
+        let old = window.frame
+        let width: CGFloat = preview ? 880 : 520
+        window.setFrame(NSRect(x: old.midX - width / 2, y: old.minY, width: width, height: 560), display: true)
     }
 
     private func cancelClipboardAction() {
@@ -115,31 +150,80 @@ final class HistoryPanelController: NSWindowController {
         return true
     }
 
-    private func copyToClipboard(_ item: ClipboardItem, dismissOnSuccess: Bool = false) {
+    private func copyToClipboard(_ item: ClipboardItem, dismissOnSuccess: Bool = false, plainText: Bool = false) {
         let id = beginClipboardAction()
         clipboardActionTask = Task { [weak self] in
             guard let self else { return }
-            let result = await self.pasteService.copyToClipboard(item)
+            let result = await self.pasteService.copyToClipboard(item, plainText: plainText)
             guard self.finishClipboardAction(id: id) else { return }
             self.appState.apply(result, successMessage: "Copied to clipboard.")
-            if result.isSuccess, dismissOnSuccess { self.hidePanel() }
+            if result.isSuccess, dismissOnSuccess { self.hidePanel(); self.showHUD("Copied to Clipboard", symbol: "doc.on.doc") }
         }
     }
 
-    private func paste(_ item: ClipboardItem) {
+    private func performPrimaryAction(_ item: ClipboardItem, alternate: Bool = false) {
+        let plain = alternate ? !preferences.plainText : preferences.plainText
+        if preferences.selectionAction == .copy || !AccessibilityService.isTrusted() || previousApp == nil {
+            copyToClipboard(item, dismissOnSuccess: true, plainText: plain)
+        } else { paste(item, plainText: plain) }
+    }
+
+    private func paste(_ item: ClipboardItem, plainText: Bool) {
         let id = beginClipboardAction()
         let target = previousApp
         clipboardActionTask = Task { [weak self] in
             guard let self else { return }
-            let result = await self.pasteService.paste(item, into: target) { [weak self] in
+            let result = await self.pasteService.paste(item, into: target, plainText: plainText) { [weak self] in
                 self?.hidePanel()
             }
             guard self.finishClipboardAction(id: id) else { return }
-            if !result.isSuccess {
+            if result.isSuccess {
+                await self.historyStore.recordUse(item)
+                self.showHUD(plainText ? "Pasted as Plain Text" : "Pasted to \(target?.localizedName ?? "App")", symbol: "checkmark")
+            } else {
                 self.appState.apply(result, successMessage: "")
                 self.window?.orderFrontRegardless()
                 self.window?.makeKey()
             }
+        }
+    }
+
+    private func showHUD(_ message: String, symbol: String) {
+        hud?.orderOut(nil)
+        let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 260, height: 84),
+                            styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+        panel.level = .statusBar
+        panel.backgroundColor = .clear
+        panel.isOpaque = false
+        panel.hasShadow = true
+        panel.ignoresMouseEvents = true
+        panel.contentView = NSHostingView(rootView:
+            HStack(spacing: 12) {
+                Image(systemName: symbol).font(.system(size: 23, weight: .medium))
+                Text(message).font(.system(size: 13, weight: .medium))
+            }.frame(width: 260, height: 84).background(.ultraThinMaterial)
+                .clipShape(RoundedRectangle(cornerRadius: 18)))
+        panel.center()
+        panel.orderFrontRegardless()
+        hud = panel
+        Task { [weak self, weak panel] in
+            try? await Task.sleep(nanoseconds: 1_700_000_000)
+            panel?.orderOut(nil)
+            if self?.hud === panel { self?.hud = nil }
+        }
+    }
+
+    private func togglePin(_ item: ClipboardItem) {
+        Task { [weak self] in
+            guard let self else { return }
+            if case let .failure(message) = await self.historyStore.togglePin(item) { self.appState.showStatus(message) }
+        }
+    }
+
+    private func undoDelete() {
+        Task { [weak self] in
+            guard let self else { return }
+            if case let .failure(message) = await self.historyStore.undoDelete() { self.appState.showStatus(message) }
         }
     }
 
@@ -172,7 +256,8 @@ final class HistoryPanelController: NSWindowController {
     private func confirmAndClearHistory() {
         let alert = NSAlert()
         alert.messageText = "Clear Clipboard History?"
-        alert.informativeText = "This removes every saved clipboard item from local history."
+        appState.actionsPresented = false
+        alert.informativeText = "Delete \(historyStore.items.filter { !$0.isPinned }.count) items from local history? Pinned items will be kept. This cannot be undone."
         alert.alertStyle = .warning
         alert.addButton(withTitle: "Clear History")
         alert.addButton(withTitle: "Cancel")
@@ -204,31 +289,60 @@ final class HistoryPanelController: NSWindowController {
         panel.isOpaque = false
         panel.isReleasedWhenClosed = false
         panel.hidesOnDeactivate = false
-        panel.animationBehavior = .utilityWindow
+        panel.animationBehavior = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? .none : .utilityWindow
         panel.standardWindowButton(.closeButton)?.isHidden = true
         panel.standardWindowButton(.miniaturizeButton)?.isHidden = true
         panel.standardWindowButton(.zoomButton)?.isHidden = true
         panel.onResignKey = { [weak self] in
             guard let self, self.window?.isVisible == true,
-                  self.window?.attachedSheet == nil else { return }
+                  self.window?.attachedSheet == nil, !self.appState.actionsPresented else { return }
             self.close()
         }
-        panel.onCancel = { [weak self] in self?.close() }
+        panel.onCancel = { [weak self] in
+            guard let self else { return }
+            if self.appState.actionsPresented { self.appState.actionsPresented = false }
+            else if !self.appState.searchText.isEmpty { self.appState.searchText = "" }
+            else { self.close() }
+        }
         panel.onMoveSelection = { [weak self] delta in
             guard let self else { return }
             self.appState.moveSelection(delta: delta, in: self.currentItems)
         }
         panel.onReturnAction = { [weak self] in
             guard let self, let item = self.currentSelection else { return }
-            self.copyToClipboard(item, dismissOnSuccess: true)
+            self.performPrimaryAction(item)
         }
         panel.onCopyAction = { [weak self] in
             guard let self, let item = self.currentSelection else { return }
             self.copyToClipboard(item)
         }
         panel.onDeleteAction = { [weak self] in
-            guard let self, let item = self.currentSelection else { return }
+            guard let self, self.appState.searchText.isEmpty, let item = self.currentSelection else { return }
             self.remove(item)
+        }
+        panel.canDeleteSelection = { [weak self] in self?.appState.searchText.isEmpty == true }
+        panel.canUndoDeletion = { [weak self] in self?.historyStore.deletedItem != nil }
+        panel.onAlternateReturnAction = { [weak self] in
+            guard let self, let item = self.currentSelection else { return }
+            self.performPrimaryAction(item, alternate: true)
+        }
+        panel.onActions = { [weak self] in self?.appState.actionsPresented.toggle() }
+        panel.onPin = { [weak self] in if let self, let item = self.currentSelection { self.togglePin(item) } }
+        panel.onUndo = { [weak self] in self?.undoDelete() }
+        panel.onNumber = { [weak self] index in
+            guard let self, self.currentItems.indices.contains(index) else { return }
+            self.performPrimaryAction(self.currentItems[index])
+        }
+        panel.onJump = { [weak self] last in
+            guard let self else { return }
+            self.appState.selectedItemID = last ? self.currentItems.last?.id : self.currentItems.first?.id
+            self.appState.moveSelection(delta: 0, in: self.currentItems)
+        }
+        panel.onCycleFilter = { [weak self] reverse in
+            guard let self else { return }
+            let filters = HistoryFilter.allCases
+            let index = filters.firstIndex(of: self.appState.selectedFilter) ?? 0
+            self.appState.selectedFilter = filters[(index + (reverse ? filters.count - 1 : 1)) % filters.count]
         }
     }
 
@@ -258,7 +372,7 @@ final class HistoryPanelController: NSWindowController {
 
         return NSPoint(
             x: visibleFrame.midX - panelSize.width / 2,
-            y: visibleFrame.maxY - panelSize.height - 88
+            y: preferences.position == .center ? visibleFrame.midY - panelSize.height / 2 : visibleFrame.maxY - panelSize.height - 88
         )
     }
 
@@ -303,6 +417,15 @@ final class HistoryPanel: NSPanel {
     var onReturnAction: (() -> Void)?
     var onCopyAction: (() -> Void)?
     var onDeleteAction: (() -> Void)?
+    var onAlternateReturnAction: (() -> Void)?
+    var onActions: (() -> Void)?
+    var onPin: (() -> Void)?
+    var onUndo: (() -> Void)?
+    var onNumber: ((Int) -> Void)?
+    var onJump: ((Bool) -> Void)?
+    var onCycleFilter: ((Bool) -> Void)?
+    var canDeleteSelection: (() -> Bool)?
+    var canUndoDeletion: (() -> Bool)?
 
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { false }
@@ -331,23 +454,44 @@ final class HistoryPanel: NSPanel {
         let isEditingText = firstResponder is NSTextView || firstResponder is NSTextField
         let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
             .subtracting([.capsLock, .numericPad, .function])
+        if modifiers == .command {
+            switch event.charactersIgnoringModifiers?.lowercased() {
+            case "c": onCopyAction?(); return
+            case "k": onActions?(); return
+            case "z":
+                if canUndoDeletion?() == true { onUndo?(); return }
+            case let value?:
+                if let number = Int(value), (1...9).contains(number) { onNumber?(number - 1); return }
+            default: break
+            }
+        }
+        if modifiers == [.command, .shift], event.charactersIgnoringModifiers?.lowercased() == "p" {
+            onPin?(); return
+        }
 
         switch event.keyCode {
         case 53:
             onCancel?()
         case 51, 117:
-            if !isEditingText && modifiers.isEmpty {
+            if modifiers == .command && canDeleteSelection?() == false {
+                super.sendEvent(event)
+            } else if modifiers == .command || !isEditingText && modifiers.isEmpty {
                 onDeleteAction?()
             } else {
                 super.sendEvent(event)
             }
         case 126:
-            if modifiers.isEmpty { onMoveSelection?(-1) } else { super.sendEvent(event) }
+            if modifiers == .command { onJump?(false) }
+            else if modifiers.isEmpty { onMoveSelection?(-1) } else { super.sendEvent(event) }
         case 125:
-            if modifiers.isEmpty { onMoveSelection?(1) } else { super.sendEvent(event) }
+            if modifiers == .command { onJump?(true) }
+            else if modifiers.isEmpty { onMoveSelection?(1) } else { super.sendEvent(event) }
+        case 48:
+            if modifiers.isEmpty || modifiers == .shift { onCycleFilter?(modifiers == .shift) }
+            else { super.sendEvent(event) }
         case 36, 76:
             if modifiers == .option {
-                onCopyAction?()
+                if let onAlternateReturnAction { onAlternateReturnAction() } else { onCopyAction?() }
             } else if modifiers.isEmpty {
                 onReturnAction?()
             } else {

@@ -27,7 +27,7 @@ enum HistoryItemLoadError: LocalizedError {
 actor HistoryRepository {
     private static let logger = Logger(subsystem: "com.xia.PasteLite", category: "history-store")
     private let databaseURL: URL
-    private let limit: Int
+    private var limit: Int
     private let memoryByteLimit = 64 * 1024 * 1024
     private var database: SQLiteDatabase?
     private var didOpen = false
@@ -62,12 +62,13 @@ actor HistoryRepository {
         openIfNeeded()
         if let database {
             do {
+                try expireSensitive(database: database)
                 items = try fetchRecentItems(limit: min(max(1, requestedLimit), limit), database: database)
                 errorMessage = nil
             } catch {
                 record(error, message: "Could not load clipboard history.")
             }
-        }
+        } else { pruneMemory() }
         return snapshot()
     }
 
@@ -77,15 +78,30 @@ actor HistoryRepository {
             return HistoryMutation(result: .success, snapshot: snapshot())
         }
         openIfNeeded()
+        guard !item.isExpired else {
+            return HistoryMutation(result: .failure("This concealed item has expired."), snapshot: snapshot())
+        }
         guard item.hasLoadedAssets, !item.assets.isEmpty else {
             let message = "Could not save a clipboard item without its original data."
             errorMessage = message
             return HistoryMutation(result: .failure(message), snapshot: snapshot())
         }
+        var item = item
+        if let existing = items.first(where: { $0.contentHash == item.contentHash }) {
+            item.isPinned = existing.isPinned
+            item.useCount = existing.useCount
+        }
         if let database {
             do {
                 var updatedItems: [ClipboardItem] = []
                 try database.transaction {
+                    try expireSensitive(database: database)
+                    let existing = try database.prepare("SELECT is_pinned, use_count FROM history_items WHERE content_hash = ?;")
+                    try existing.bind(item.contentHash, at: 1)
+                    if try existing.step() {
+                        item.isPinned = existing.columnInt64(at: 0) != 0
+                        item.useCount = Int(existing.columnInt64(at: 1))
+                    }
                     try deleteItem(contentHash: item.contentHash, database: database)
                     try insert(item, database: database)
                     try pruneHistory(database: database)
@@ -98,7 +114,7 @@ actor HistoryRepository {
         } else {
             items.removeAll { $0.contentHash == item.contentHash }
             items.insert(item, at: 0)
-            if items.count > limit { items.removeLast(items.count - limit) }
+            pruneMemory()
             var bytes = items.reduce(0) { $0 + $1.assetByteCount }
             while bytes > memoryByteLimit, let oldest = items.popLast() {
                 bytes -= oldest.assetByteCount
@@ -106,6 +122,24 @@ actor HistoryRepository {
         }
         errorMessage = nil
         return HistoryMutation(result: .success, snapshot: snapshot())
+    }
+
+    func restore(_ item: ClipboardItem, generation: Int) -> HistoryMutation {
+        openIfNeeded()
+        guard generation >= captureGeneration else {
+            return HistoryMutation(result: .success, snapshot: snapshot())
+        }
+        // A newer copy of the same content already restores its availability.
+        if let database {
+            do {
+                let statement = try database.prepare("SELECT 1 FROM history_items WHERE content_hash = ?;")
+                try statement.bind(item.contentHash, at: 1)
+                if try statement.step() { return HistoryMutation(result: .success, snapshot: snapshot()) }
+            } catch { return failure(error, message: "Could not restore this clipboard item.") }
+        } else if items.contains(where: { $0.contentHash == item.contentHash }) {
+            return HistoryMutation(result: .success, snapshot: snapshot())
+        }
+        return add(item, captureGeneration: generation)
     }
 
     func remove(id: UUID) -> HistoryMutation {
@@ -124,17 +158,17 @@ actor HistoryRepository {
         return HistoryMutation(result: .success, snapshot: snapshot())
     }
 
-    func clear(captureGeneration generation: Int? = nil) -> HistoryMutation {
+    func clear(captureGeneration generation: Int? = nil, includePinned: Bool = false) -> HistoryMutation {
         captureGeneration = generation.map { max(captureGeneration, $0) } ?? (captureGeneration + 1)
         openIfNeeded()
         if let database {
             do {
-                try database.execute("DELETE FROM history_items;")
+                try database.execute(includePinned ? "DELETE FROM history_items;" : "DELETE FROM history_items WHERE is_pinned = 0;")
             } catch {
                 return failure(error, message: "Could not clear clipboard history.")
             }
         }
-        items.removeAll()
+        items.removeAll { includePinned || !$0.isPinned }
         errorMessage = nil
         return HistoryMutation(result: .success, snapshot: snapshot())
     }
@@ -142,6 +176,9 @@ actor HistoryRepository {
     func resolve(_ item: ClipboardItem) throws -> ClipboardItem {
         try Task.checkCancellation()
         openIfNeeded()
+        guard !item.isExpired else {
+            throw HistoryItemLoadError.unavailable
+        }
         if let database {
             let assets = try fetchAssets(historyID: item.id, database: database)
             guard !assets.isEmpty else { throw HistoryItemLoadError.unavailable }
@@ -154,6 +191,71 @@ actor HistoryRepository {
             throw HistoryItemLoadError.unavailable
         }
         return loaded
+    }
+
+    func setPinned(id: UUID, pinned: Bool) -> HistoryMutation {
+        openIfNeeded()
+        if let database {
+            do {
+                var updated: [ClipboardItem] = []
+                try database.transaction {
+                    let statement = try database.prepare("UPDATE history_items SET is_pinned = ? WHERE id = ?;")
+                    try statement.bind(Int64(pinned ? 1 : 0), at: 1)
+                    try statement.bind(id.uuidString, at: 2)
+                    try statement.run()
+                    try pruneHistory(database: database)
+                    updated = try fetchRecentItems(limit: limit, database: database)
+                }
+                items = updated
+            } catch { return failure(error, message: "Could not update this pin.") }
+        } else if let index = items.firstIndex(where: { $0.id == id }) {
+            items[index].isPinned = pinned
+            pruneMemory()
+        }
+        errorMessage = nil
+        return HistoryMutation(result: .success, snapshot: snapshot())
+    }
+
+    func recordUse(id: UUID) -> HistoryMutation {
+        openIfNeeded()
+        if let database {
+            do {
+                let statement = try database.prepare("UPDATE history_items SET use_count = use_count + 1 WHERE id = ?;")
+                try statement.bind(id.uuidString, at: 1)
+                try statement.run()
+            } catch { return failure(error, message: "Could not update usage count.") }
+        }
+        if let index = items.firstIndex(where: { $0.id == id }) { items[index].useCount += 1 }
+        return HistoryMutation(result: .success, snapshot: snapshot())
+    }
+
+    func updateLimit(_ newLimit: Int) -> HistorySnapshot {
+        limit = max(1, newLimit)
+        openIfNeeded()
+        if let database {
+            do {
+                try pruneHistory(database: database)
+                items = try fetchRecentItems(limit: limit, database: database)
+            } catch { record(error, message: "Could not update the history limit.") }
+        } else { pruneMemory() }
+        return snapshot()
+    }
+
+    private func pruneMemory() {
+        items.sort { $0.copiedAt > $1.copiedAt }
+        var count = 0
+        items.removeAll {
+            if $0.kind == .concealed && $0.copiedAt < Date().addingTimeInterval(-86400) { return true }
+            if $0.isPinned { return false }
+            count += 1
+            return count > limit
+        }
+    }
+
+    private func expireSensitive(database: SQLiteDatabase) throws {
+        let statement = try database.prepare("DELETE FROM history_items WHERE kind = 'concealed' AND copied_at <= ?;")
+        try statement.bind(Date().addingTimeInterval(-86400).timeIntervalSince1970, at: 1)
+        try statement.run()
     }
 
     func thumbnail(for item: ClipboardItem, maxPixelSize: Int) throws -> ClipboardThumbnail? {
@@ -237,9 +339,16 @@ actor HistoryRepository {
             CREATE INDEX IF NOT EXISTS idx_history_assets_history_id
                 ON history_assets(history_id, item_index, pasteboard_type);
 
-            PRAGMA user_version = 1;
             """
         )
+        let columns = try database.prepare("PRAGMA table_info(history_items);")
+        var names = Set<String>()
+        while try columns.step() { if let name = columns.columnString(at: 1) { names.insert(name) } }
+        try database.transaction {
+            if !names.contains("is_pinned") { try database.execute("ALTER TABLE history_items ADD COLUMN is_pinned INTEGER NOT NULL DEFAULT 0;") }
+            if !names.contains("use_count") { try database.execute("ALTER TABLE history_items ADD COLUMN use_count INTEGER NOT NULL DEFAULT 0;") }
+            try database.execute("PRAGMA user_version = 2;")
+        }
     }
 
     private func insert(_ item: ClipboardItem, database: SQLiteDatabase) throws {
@@ -253,8 +362,8 @@ actor HistoryRepository {
                 source_bundle_identifier,
                 copied_at,
                 content_hash,
-                preview_text
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+                preview_text, is_pinned, use_count
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
             """
         )
         try itemStatement.bind(item.id.uuidString, at: 1)
@@ -265,6 +374,8 @@ actor HistoryRepository {
         try itemStatement.bind(item.copiedAt.timeIntervalSince1970, at: 6)
         try itemStatement.bind(item.contentHash, at: 7)
         try itemStatement.bind(item.previewText, at: 8)
+        try itemStatement.bind(Int64(item.isPinned ? 1 : 0), at: 9)
+        try itemStatement.bind(Int64(item.useCount), at: 10)
         try itemStatement.run()
 
         for asset in item.assets {
@@ -302,8 +413,9 @@ actor HistoryRepository {
         let statement = try database.prepare(
             """
             DELETE FROM history_items
-            WHERE id NOT IN (
+            WHERE is_pinned = 0 AND id NOT IN (
                 SELECT id FROM history_items
+                WHERE is_pinned = 0
                 ORDER BY copied_at DESC, id DESC
                 LIMIT ?
             );
@@ -324,10 +436,13 @@ actor HistoryRepository {
                 source_bundle_identifier,
                 copied_at,
                 content_hash,
-                preview_text
+                preview_text, is_pinned, use_count,
+                (SELECT COALESCE(SUM(byte_count), 0) FROM history_assets WHERE history_id = history_items.id)
             FROM history_items
-            ORDER BY copied_at DESC, id DESC
-            LIMIT ?;
+            WHERE is_pinned = 1 OR id IN (
+                SELECT id FROM history_items WHERE is_pinned = 0 ORDER BY copied_at DESC, id DESC LIMIT ?
+            )
+            ORDER BY is_pinned DESC, copied_at DESC, id DESC;
             """
         )
         try statement.bind(Int64(requestedLimit), at: 1)
@@ -346,8 +461,7 @@ actor HistoryRepository {
                 continue
             }
 
-            loadedItems.append(
-                ClipboardItem(
+            var item = ClipboardItem(
                     id: id,
                     title: title,
                     kind: kind,
@@ -359,7 +473,10 @@ actor HistoryRepository {
                     assets: [],
                     hasLoadedAssets: false
                 )
-            )
+            item.isPinned = statement.columnInt64(at: 8) != 0
+            item.useCount = Int(statement.columnInt64(at: 9))
+            item.storedByteCount = Int(statement.columnInt64(at: 10))
+            loadedItems.append(item)
         }
         return loadedItems
     }

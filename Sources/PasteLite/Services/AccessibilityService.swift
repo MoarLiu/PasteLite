@@ -16,4 +16,11 @@ enum AccessibilityService {
         _ = isTrusted(prompt: true)
         return false
     }
+
+    static func openSettings() {
+        _ = promptIfNeeded()
+        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
+            NSWorkspace.shared.open(url)
+        }
+    }
 }

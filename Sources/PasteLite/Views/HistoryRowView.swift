@@ -5,69 +5,61 @@ struct HistoryRowView: View {
     let item: ClipboardItem
     let isSelected: Bool
     @ObservedObject var historyStore: SQLiteHistoryStore
+    var shortcut: Int? = nil
+    var query = ""
 
     var body: some View {
-        HStack(spacing: 9) {
-            itemIcon
-
-            Text(rowTitle)
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundColor(.primary)
-                .lineLimit(1)
-
-            Spacer(minLength: 8)
-        }
-        .padding(.horizontal, 9)
-        .padding(.vertical, 6)
-        .frame(minHeight: 38)
-        .background(rowBackground)
-    }
-
-    @ViewBuilder
-    private var itemIcon: some View {
-        if item.kind == .image {
-            ClipboardImageView(item: item, historyStore: historyStore, maxPixelSize: 64, contentMode: .fill)
-                .frame(width: 22, height: 22)
-                .clipShape(RoundedRectangle(cornerRadius: 2, style: .continuous))
-        } else {
-            kindIcon
-                .font(.system(size: 16, weight: .regular))
-                .foregroundColor(.primary)
-                .frame(width: 22, height: 22)
-        }
-    }
-
-    private var kindIcon: some View {
-        Group {
-            switch item.kind {
-            case .text:
-                Image(systemName: "text.alignleft")
-            case .link:
-                Image(systemName: "link")
-            case .color:
-                if let color = ColorDetector.color(from: item.previewText) {
-                    Circle()
-                        .fill(Color(nsColor: color))
-                        .frame(width: 14, height: 14)
-                } else {
-                    Image(systemName: "paintpalette")
+        HStack(spacing: 10) {
+            icon.frame(width: 32, height: 32)
+                .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+            VStack(alignment: .leading, spacing: 3) {
+                HighlightedText(value: item.title, query: isSelected ? "" : query)
+                    .font(.system(size: 13, weight: .medium)).lineLimit(1)
+                HStack(spacing: 4) {
+                    if let icon = SourceAppIcon.image(for: item.sourceBundleIdentifier) {
+                        Image(nsImage: icon).resizable().frame(width: 12, height: 12)
+                    }
+                    Text(item.sourceAppName ?? "Unknown App")
+                    Text("·")
+                    Text(ClipboardTime.relative(item.copiedAt))
                 }
-            case .image:
-                Image(systemName: "photo")
-            case .file:
-                Image(systemName: "doc")
+                .font(.system(size: 11.5))
+                .foregroundColor(isSelected ? .white.opacity(0.8) : .secondary)
+                .lineLimit(1)
             }
+            Spacer(minLength: 2)
+            VStack(alignment: .trailing, spacing: 3) {
+                if let shortcut { Text("⌘\(shortcut)").font(.system(size: 11)) }
+                if item.isPinned { Image(systemName: "pin.fill").font(.system(size: 10)) }
+            }.foregroundColor(isSelected ? .white.opacity(0.8) : .secondary)
+        }
+        .foregroundColor(isSelected ? .white : .primary)
+        .padding(.horizontal, 8).padding(.vertical, 7)
+        .frame(minHeight: 50)
+        .background(isSelected ? Color.accentColor : .clear, in: RoundedRectangle(cornerRadius: PL.Radius.row))
+        .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(isSelected ? [.isSelected] : [])
+    }
+
+    @ViewBuilder private var icon: some View {
+        if item.kind == .image {
+            ClipboardImageView(item: item, historyStore: historyStore, maxPixelSize: 96, contentMode: .fill)
+        } else if item.kind == .color, let color = ColorDetector.color(from: item.previewText) {
+            Color(nsColor: color)
+        } else {
+            Image(systemName: item.kind.symbol)
+                .font(.system(size: 17))
+                .foregroundColor(isSelected ? .white : tint)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(isSelected ? .white.opacity(0.2) : tint.opacity(0.1))
         }
     }
-
-    private var rowBackground: some View {
-        RoundedRectangle(cornerRadius: 8, style: .continuous)
-            .fill(isSelected ? Color.primary.opacity(0.10) : Color.clear)
+    private var tint: Color {
+        switch item.kind {
+        case .code: return PL.Functional.typeCode
+        case .link, .file: return .accentColor
+        case .concealed: return PL.Functional.typeConcealed
+        default: return .secondary
+        }
     }
-
-    private var rowTitle: String {
-        let title = item.title.trimmingCharacters(in: .whitespacesAndNewlines)
-        return title.isEmpty ? item.kind.title : title
-    }
-
 }

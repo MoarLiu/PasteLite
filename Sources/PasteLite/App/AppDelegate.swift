@@ -1,175 +1,181 @@
 import AppKit
+import Combine
 import SwiftUI
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private let appState = AppState()
     private let hotkeySettings = HotkeySettingsStore.shared
+    private let preferences = AppPreferences.shared
     private var statusItem: NSStatusItem?
-    private var hotkeyStatusMenuItem: NSMenuItem?
-    private var updateMenuItem: NSMenuItem?
+    private var popover: NSPopover?
+    private var menuTarget: NSRunningApplication?
     private var panelController: HistoryPanelController?
     private var clipboardMonitor: ClipboardMonitor?
     private var hotkeyManager: HotkeyManager?
     private var hotkeyRegistrationController: HotkeyRegistrationController?
+    private var observers = Set<AnyCancellable>()
+    private var maintenanceTimer: Timer?
+    private var updateTimer: Timer?
+    private var isTerminating = false
+    private var isReadyToTerminate = false
+    private var settingsWindow: NSWindow?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
-        if let appIcon = NSImage(named: "AppIcon") {
-            NSApp.applicationIconImage = appIcon
-        }
-
-        let historyStore = SQLiteHistoryStore()
+        NSApp.appearance = preferences.theme.appearance
+        if let appIcon = NSImage(named: "AppIcon") { NSApp.applicationIconImage = appIcon }
+        let historyStore = AppServices.shared.historyStore
         let pasteService = PasteService(historyStore: historyStore)
-        let panelController = HistoryPanelController(
-            appState: appState,
-            historyStore: historyStore,
-            pasteService: pasteService
-        )
-
-        self.panelController = panelController
-        self.clipboardMonitor = ClipboardMonitor(historyStore: historyStore, onError: { [weak appState = self.appState] message in
+        let controller = HistoryPanelController(appState: appState, historyStore: historyStore, pasteService: pasteService)
+        panelController = controller
+        clipboardMonitor = ClipboardMonitor(historyStore: historyStore, onError: { [weak appState] message in
             appState?.showStatus(message)
-        })
-        self.hotkeyManager = HotkeyManager { [weak panelController, weak hotkeySettings = self.hotkeySettings] in
+        }, preferences: preferences)
+        hotkeyManager = HotkeyManager { [weak controller, weak hotkeySettings] in
             guard hotkeySettings?.isRecording == false else { return }
-            panelController?.toggle()
+            controller?.toggle()
         }
-
-        configureStatusItem()
-        observeHotkeySettings()
+        configureStatusItem(historyStore: historyStore)
+        if let hotkeyManager {
+            hotkeyRegistrationController = HotkeyRegistrationController(settings: hotkeySettings, registrar: hotkeyManager) { [weak self] status in
+                self?.hotkeySettings.updateRegistrationStatus(status)
+                self?.statusItem?.button?.toolTip = status.message
+            }
+        }
+        preferences.$recordingPaused.dropFirst().sink { [weak self] _ in
+            historyStore.invalidateCaptures()
+            DispatchQueue.main.async { self?.updateStatusIcon() }
+        }.store(in: &observers)
+        preferences.$historyLimit.removeDuplicates().dropFirst().sink { limit in
+            Task { await historyStore.updateLimit(limit) }
+        }.store(in: &observers)
+        preferences.$sensitivePolicy.dropFirst().sink { _ in historyStore.invalidateCaptures() }.store(in: &observers)
+        preferences.$excludedApps.dropFirst().sink { _ in historyStore.invalidateCaptures() }.store(in: &observers)
+        maintenanceTimer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { _ in
+            Task { @MainActor in await historyStore.expireSensitive() }
+        }
+        updateTimer = Timer.scheduledTimer(withTimeInterval: 6 * 3600, repeats: true) { _ in
+            Task { @MainActor in
+                if AppPreferences.shared.automaticUpdates { await UpdateModel.shared.check() }
+            }
+        }
+        #if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("--ui-preview"),
+           ProcessInfo.processInfo.environment["PASTELITE_DATA_DIRECTORY"] != nil {
+            preferences.automaticUpdates = false
+            Task {
+                await PreviewFixtures.seed(historyStore)
+                if ProcessInfo.processInfo.arguments.contains("--review-quit") {
+                    preferences.clearOnQuit = true
+                    NSApp.terminate(nil)
+                    NSApp.terminate(nil)
+                } else { controller.toggle() }
+            }
+            return
+        }
+        #endif
         clipboardMonitor?.start()
+        if ProcessInfo.processInfo.arguments.contains("--show-history") { controller.toggle() }
+        Task {
+            if preferences.automaticUpdates { await UpdateModel.shared.check() }
+        }
+    }
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        if isReadyToTerminate { return .terminateNow }
+        guard !isTerminating else { return .terminateCancel }
+        guard preferences.clearOnQuit else { return .terminateNow }
+        isTerminating = true
+        clipboardMonitor?.stop()
+        Task {
+            let result = await AppServices.shared.historyStore.clearIncludingPinned()
+            if result.isSuccess {
+                self.isReadyToTerminate = true
+                DispatchQueue.main.async { sender.terminate(nil) }
+            }
+            else {
+                ReleaseInstaller.cancelPendingInstall()
+                isTerminating = false
+                clipboardMonitor?.start()
+                let alert = NSAlert()
+                alert.messageText = "Could Not Clear History"
+                alert.informativeText = "PasteLite is still open so you can retry clearing your clipboard history."
+                alert.runModal()
+            }
+        }
+        // NSApplication's terminateLater nested loop can block the Swift main actor
+        // when termination originated in an async action. Return to the run loop,
+        // then issue the final termination only after storage finishes.
+        return .terminateCancel
     }
 
     func applicationWillTerminate(_ notification: Notification) {
         clipboardMonitor?.stop()
         hotkeyRegistrationController?.stop()
+        maintenanceTimer?.invalidate()
+        updateTimer?.invalidate()
     }
 
-    private func configureStatusItem() {
+    private func configureStatusItem(historyStore: SQLiteHistoryStore) {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
-        item.button?.image = NSImage(systemSymbolName: "doc.on.clipboard", accessibilityDescription: "PasteLite")
-
-        let menu = NSMenu()
-        menu.addItem(
-            NSMenuItem(
-                title: "Show Clipboard History",
-                action: #selector(togglePanelFromStatusItem),
-                keyEquivalent: ""
-            )
-        )
-
-        let hotkeyStatusMenuItem = NSMenuItem(title: "Hotkey: Registering...", action: nil, keyEquivalent: "")
-        hotkeyStatusMenuItem.isEnabled = false
-        menu.addItem(hotkeyStatusMenuItem)
-        menu.addItem(.separator())
-        menu.addItem(NSMenuItem(title: "Settings...", action: #selector(openSettings), keyEquivalent: ","))
-        let updateMenuItem = NSMenuItem(title: "Check for Updates...", action: #selector(checkForUpdates), keyEquivalent: "")
-        menu.addItem(updateMenuItem)
-        let versionMenuItem = NSMenuItem(title: AppInfo.displayVersion, action: nil, keyEquivalent: "")
-        versionMenuItem.isEnabled = false
-        menu.addItem(versionMenuItem)
-        menu.addItem(.separator())
-        menu.addItem(NSMenuItem(title: "Quit PasteLite", action: #selector(quit), keyEquivalent: "q"))
-
-        menu.items.forEach { $0.target = self }
-        item.menu = menu
-
-        self.hotkeyStatusMenuItem = hotkeyStatusMenuItem
-        self.updateMenuItem = updateMenuItem
         statusItem = item
+        updateStatusIcon()
+        item.button?.target = self
+        item.button?.action = #selector(toggleMenu)
+        let popover = NSPopover()
+        popover.behavior = .transient
+        popover.contentViewController = NSHostingController(rootView: MenuBarView(
+            historyStore: historyStore,
+            onHistory: { [weak self] in
+                guard let self else { return }
+                self.popover?.close()
+                self.panelController?.toggle(anchor: self.statusItem?.button, target: self.menuTarget)
+            },
+            onPaste: { [weak self] item in
+                guard let self else { return }
+                self.popover?.close()
+                self.panelController?.pasteFromMenu(item, target: self.menuTarget)
+            },
+            onSettings: { [weak self] in self?.openSettings() },
+            onUpdates: { [weak self] in self?.openSettings(page: .updates); Task { await UpdateModel.shared.check() } },
+            onQuit: { NSApp.terminate(nil) }
+        ))
+        self.popover = popover
     }
 
-    @objc private func togglePanelFromStatusItem() {
-        panelController?.toggle(anchor: statusItem?.button)
+    private func updateStatusIcon() {
+        let name = preferences.recordingPaused ? "MenuBarIconPausedTemplate" : "MenuBarIconTemplate"
+        let image = NSImage(named: name) ?? NSImage(systemSymbolName: "doc.on.clipboard", accessibilityDescription: "PasteLite")
+        image?.isTemplate = true
+        image?.size = NSSize(width: 18, height: 18)
+        statusItem?.button?.image = image
+        statusItem?.button?.appearsDisabled = preferences.recordingPaused
+        statusItem?.button?.setAccessibilityLabel(preferences.recordingPaused ? "PasteLite, recording paused" : "PasteLite")
     }
 
-    @objc private func quit() {
-        NSApp.terminate(nil)
-    }
-
-    @objc private func openSettings() {
-        if !NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil) {
-            NSApp.sendAction(Selector(("showPreferencesWindow:")), to: nil, from: nil)
+    @objc private func toggleMenu() {
+        guard let button = statusItem?.button, let popover else { return }
+        if popover.isShown { popover.close() }
+        else {
+            menuTarget = NSWorkspace.shared.frontmostApplication
+            popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
         }
+    }
+
+    private func openSettings(page: SettingsPage = .general) {
+        popover?.close()
+        preferences.settingsPage = page
+        if settingsWindow == nil {
+            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 600, height: 680),
+                                  styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false)
+            window.title = "PasteLite Settings"
+            window.isReleasedWhenClosed = false
+            window.contentView = NSHostingView(rootView: SettingsView())
+            window.center()
+            settingsWindow = window
+        }
+        settingsWindow?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
-    }
-
-    @objc private func checkForUpdates() {
-        updateMenuItem?.isEnabled = false
-        updateMenuItem?.title = "Checking for Updates..."
-
-        Task {
-            let result: Result<UpdateCheckResult, Error>
-            do {
-                result = .success(try await UpdateChecker().check())
-            } catch {
-                result = .failure(error)
-            }
-
-            await MainActor.run {
-                self.updateMenuItem?.isEnabled = true
-                self.updateMenuItem?.title = "Check for Updates..."
-                self.presentUpdateResult(result)
-            }
-        }
-    }
-
-    private func updateHotkeyStatus(_ status: HotkeyRegistrationStatus?) {
-        let message = status?.message ?? "Hotkey unavailable"
-        hotkeySettings.updateRegistrationStatus(status)
-        hotkeyStatusMenuItem?.title = message
-        statusItem?.button?.toolTip = message
-    }
-
-    private func observeHotkeySettings() {
-        guard let hotkeyManager else { return }
-        hotkeyRegistrationController = HotkeyRegistrationController(settings: hotkeySettings, registrar: hotkeyManager) { [weak self] status in
-            self?.updateHotkeyStatus(status)
-        }
-    }
-
-    private func presentUpdateResult(_ result: Result<UpdateCheckResult, Error>) {
-        NSApp.activate(ignoringOtherApps: true)
-
-        let alert = NSAlert()
-        alert.alertStyle = .informational
-
-        switch result {
-        case let .success(updateResult):
-            configure(alert, for: updateResult)
-        case let .failure(error):
-            alert.messageText = "Could Not Check for Updates"
-            alert.informativeText = error.localizedDescription
-            alert.addButton(withTitle: "OK")
-        }
-
-        let response = alert.runModal()
-        if response == .alertFirstButtonReturn,
-           case let .success(.updateAvailable(_, _, releaseURL?)) = result {
-            NSWorkspace.shared.open(releaseURL)
-        }
-    }
-
-    private func configure(_ alert: NSAlert, for result: UpdateCheckResult) {
-        switch result {
-        case .notConfigured:
-            alert.messageText = "Update Checking Is Not Configured"
-            alert.informativeText = "This build does not include an update feed URL."
-            alert.addButton(withTitle: "OK")
-        case let .upToDate(currentVersion):
-            alert.messageText = "PasteLite Is Up to Date"
-            alert.informativeText = "You are running PasteLite \(currentVersion)."
-            alert.addButton(withTitle: "OK")
-        case let .updateAvailable(currentVersion, latestVersion, releaseURL):
-            alert.messageText = "A PasteLite Update Is Available"
-            alert.informativeText = "Installed: \(currentVersion)\nLatest: \(latestVersion)"
-            if releaseURL != nil {
-                alert.addButton(withTitle: "Open Release")
-                alert.addButton(withTitle: "Cancel")
-            } else {
-                alert.addButton(withTitle: "OK")
-            }
-        }
     }
 }

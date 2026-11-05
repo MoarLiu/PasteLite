@@ -9,7 +9,8 @@ struct HotkeyShortcutChoice: Identifiable, Equatable {
 
 @MainActor
 final class HotkeySettingsStore: ObservableObject {
-    static let shared = HotkeySettingsStore()
+    static let shared = HotkeySettingsStore(defaults:
+        ProcessInfo.processInfo.environment["PASTELITE_PREFERENCES_SUITE"].flatMap(UserDefaults.init(suiteName:)) ?? .standard)
 
     static let defaultChoiceID = "automatic"
     static let customChoiceID = "custom"
@@ -57,6 +58,7 @@ final class HotkeySettingsStore: ObservableObject {
     @Published private(set) var isRecording = false
     @Published private(set) var validationMessage: String?
     @Published private(set) var registrationMessage = "Hotkey: Registering..."
+    @Published private(set) var registrationStatus: HotkeyRegistrationStatus?
     @Published private(set) var settingsVersion = 0
 
     private static let selectedChoiceKey = "PasteLite.selectedHotkeyChoice"
@@ -99,6 +101,11 @@ final class HotkeySettingsStore: ObservableObject {
         selectedChoice.shortcuts
     }
 
+    var activeShortcut: HotkeyShortcut? {
+        if case let .registered(shortcut) = registrationStatus { return shortcut }
+        return nil
+    }
+
     func selectChoice(id: String) {
         guard Self.baseChoice(id: id) != nil else { return }
         selectedChoiceID = id
@@ -108,6 +115,7 @@ final class HotkeySettingsStore: ObservableObject {
     }
 
     func updateRegistrationStatus(_ status: HotkeyRegistrationStatus?) {
+        registrationStatus = status
         registrationMessage = status?.message ?? "Hotkey unavailable"
     }
 

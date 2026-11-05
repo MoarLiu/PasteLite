@@ -8,35 +8,33 @@ struct HotkeyRecorderView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 7) {
             HStack(alignment: .center, spacing: 16) {
-                Text("Global hotkey")
-                    .foregroundStyle(.secondary)
-                    .frame(width: 120, alignment: .leading)
-
-                VStack(alignment: .trailing, spacing: 7) {
-                    recorderButton
-                        .frame(width: 230, height: 44)
-
-                    HStack(spacing: 10) {
-                        Button("Reset") {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Open Clipboard History").font(.system(size: 13))
+                    Text("Works from any app").font(.system(size: 11.5)).foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 0)
+                recorderButton.frame(width: 205, height: 34)
+                HStack(spacing: 10) {
+                        Button {
                             hotkeySettings.cancelRecording()
                             hotkeySettings.selectChoice(id: HotkeySettingsStore.defaultChoiceID)
-                        }
+                        } label: { Image(systemName: "arrow.counterclockwise") }
+                        .help("Reset shortcut")
                         .disabled(hotkeySettings.selectedChoiceID == HotkeySettingsStore.defaultChoiceID)
-
-                        Button("Disable") {
+                        Button {
                             hotkeySettings.cancelRecording()
                             hotkeySettings.selectChoice(id: HotkeySettingsStore.disabledChoiceID)
-                        }
+                        } label: { Image(systemName: "xmark") }
+                        .help("Disable shortcut")
                         .disabled(hotkeySettings.selectedChoiceID == HotkeySettingsStore.disabledChoiceID)
                     }
-                    .font(.caption)
-                }
+                    .buttonStyle(.borderless).font(.caption)
             }
 
             Text(helpMessage)
                 .font(.caption)
                 .foregroundStyle(.secondary)
-                .frame(maxWidth: .infinity, alignment: .trailing)
+                .frame(maxWidth: .infinity, alignment: .leading)
         }
         .onDisappear {
             hotkeySettings.cancelRecording()
@@ -58,14 +56,11 @@ struct HotkeyRecorderView: View {
 
                 HStack(spacing: 10) {
                     Text(displayTitle)
-                        .font(.system(size: 17, weight: .semibold, design: .rounded))
+                        .font(.system(size: 12.5, weight: .medium))
                         .lineLimit(1)
 
                     Spacer(minLength: 8)
 
-                    Text(stateTitle)
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(.secondary)
                 }
                 .padding(.horizontal, 13)
             }
@@ -103,7 +98,7 @@ struct HotkeyRecorderView: View {
             return "Disabled"
         }
 
-        return hotkeySettings.selectedShortcuts.first?.displayTitle ?? "Not set"
+        return hotkeySettings.activeShortcut?.displayTitle ?? hotkeySettings.selectedShortcuts.first?.displayTitle ?? "Not set"
     }
 
     private var stateTitle: String {

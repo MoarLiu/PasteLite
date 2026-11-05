@@ -3,8 +3,8 @@ set -euo pipefail
 export COPYFILE_DISABLE=1
 
 APP_NAME="PasteLite"
-APP_VERSION="${APP_VERSION:-0.2.1}"
-APP_BUILD="${APP_BUILD:-21}"
+APP_VERSION="${APP_VERSION:-0.3.0}"
+APP_BUILD="${APP_BUILD:-30}"
 CONFIGURATION="${CONFIGURATION:-release}"
 ARCHES="${ARCHES:-arm64 x86_64}"
 
@@ -51,17 +51,17 @@ for arch in $ARCHES; do
   dmg_path="$RELEASE_DIR/$APP_NAME-$APP_VERSION-macos-$arch.dmg"
 
   echo "==> Building $APP_NAME $APP_VERSION ($APP_BUILD) for $arch"
+  rm -rf "$stage_dir"
+  mkdir -p "$stage_dir"
   SWIFT_BUILD_TRIPLE="$triple" \
     SWIFT_BUILD_SCRATCH_PATH="$SWIFT_BUILD_SCRATCH_BASE-$arch" \
-    DIST_DIR="$DIST_DIR" \
+    DIST_DIR="$stage_dir" \
     CONFIGURATION="$CONFIGURATION" \
     APP_VERSION="$APP_VERSION" \
     APP_BUILD="$APP_BUILD" \
     "$ROOT_DIR/script/build_and_run.sh" --package >/dev/null
 
-  rm -rf "$stage_dir"
-  mkdir -p "$stage_dir"
-  ditto --norsrc --noextattr "$DIST_DIR/$APP_NAME.app" "$app_path"
+  rm -f "$stage_dir/$APP_NAME-app.zip"
   xattr -cr "$stage_dir"
 
   actual_arches="$(lipo -archs "$app_path/Contents/MacOS/$APP_NAME")"

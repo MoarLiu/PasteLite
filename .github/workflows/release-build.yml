@@ -13,6 +13,10 @@ jobs:
   build:
     runs-on: macos-15-intel
     timeout-minutes: 30
+    env:
+      APP_VERSION: "0.3.0"
+      APP_BUILD: "30"
+      SWIFT_TEST_BUILD_SYSTEM: native
 
     steps:
       - uses: actions/checkout@v4
@@ -25,6 +29,14 @@ jobs:
       - name: Run tests
         run: ./script/run_checks.sh
 
+      - name: Verify clear on repeated quit
+        run: |
+          CONFIGURATION=debug BUNDLE_ID=com.xia.PasteLite.review \
+            DIST_DIR="$PWD/dist/runtime-review" \
+            SWIFT_BUILD_SCRATCH_PATH="$PWD/.build-runtime-review" \
+            ./script/build_and_run.sh --package
+          python3 script/review_runtime.py dist/runtime-review/PasteLite.app
+
       - name: Build both architectures
         run: ./script/package_release.sh
 
@@ -34,23 +46,29 @@ jobs:
 
           for arch in arm64 x86_64; do
             app="dist/release/stage-$arch/PasteLite.app"
-            dmg="dist/release/PasteLite-0.2.1-macos-$arch.dmg"
+            dmg="dist/release/PasteLite-$APP_VERSION-macos-$arch.dmg"
             mount_dir="$RUNNER_TEMP/PasteLite-$arch"
 
             test "$(lipo -archs "$app/Contents/MacOS/PasteLite")" = "$arch"
-            test "$(plutil -extract CFBundleShortVersionString raw "$app/Contents/Info.plist")" = "0.2.1"
-            test "$(plutil -extract CFBundleVersion raw "$app/Contents/Info.plist")" = "21"
+            test "$(plutil -extract CFBundleShortVersionString raw "$app/Contents/Info.plist")" = "$APP_VERSION"
+            test "$(plutil -extract CFBundleVersion raw "$app/Contents/Info.plist")" = "$APP_BUILD"
             test "$(plutil -extract PasteLiteUpdateCheckURL raw "$app/Contents/Info.plist")" = \
               "https://api.github.com/repos/MoarLiu/PasteLite/releases/latest"
             codesign --verify --deep --strict "$app"
 
             if [[ "$arch" == "x86_64" ]]; then
-              "$app/Contents/MacOS/PasteLite" &
+              suite="PasteLite.CISmoke.$GITHUB_RUN_ID"
+              defaults write "$suite" design.automaticUpdates -bool false
+              PASTELITE_DATA_DIRECTORY="$RUNNER_TEMP/PasteLite-smoke" \
+                PASTELITE_PREFERENCES_SUITE="$suite" "$app/Contents/MacOS/PasteLite" &
               app_pid=$!
               sleep 2
               kill -0 "$app_pid"
               kill "$app_pid"
               wait "$app_pid" || true
+              defaults delete "$suite"
+              PASTELITE_UPDATE_TEST_APP="$PWD/$app" \
+                ./script/run_checks.sh --filter UpdateInstallationTests
             fi
 
             mkdir -p "$mount_dir"
@@ -63,14 +81,14 @@ jobs:
           done
 
           cd dist/release
-          shasum -a 256 -c PasteLite-0.2.1-macos-arm64.app.zip.sha256
-          shasum -a 256 -c PasteLite-0.2.1-macos-arm64.dmg.sha256
-          shasum -a 256 -c PasteLite-0.2.1-macos-x86_64.app.zip.sha256
-          shasum -a 256 -c PasteLite-0.2.1-macos-x86_64.dmg.sha256
+          shasum -a 256 -c "PasteLite-$APP_VERSION-macos-arm64.app.zip.sha256"
+          shasum -a 256 -c "PasteLite-$APP_VERSION-macos-arm64.dmg.sha256"
+          shasum -a 256 -c "PasteLite-$APP_VERSION-macos-x86_64.app.zip.sha256"
+          shasum -a 256 -c "PasteLite-$APP_VERSION-macos-x86_64.dmg.sha256"
 
       - uses: actions/upload-artifact@v4
         with:
-          name: PasteLite-0.2.1-release
+          name: PasteLite-${{ env.APP_VERSION }}-release
           path: |
             dist/release/*.app.zip
             dist/release/*.dmg

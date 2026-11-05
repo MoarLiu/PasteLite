@@ -1,139 +1,230 @@
 import AppKit
 import SwiftUI
+import LinkPresentation
 
 struct DetailView: View {
     let item: ClipboardItem?
     @ObservedObject var historyStore: SQLiteHistoryStore
+    var onCopy: (ClipboardItem) -> Void = { _ in }
+    var onPin: (ClipboardItem) -> Void = { _ in }
+    var onCopyText: (String) -> Void = { _ in }
+    @StateObject private var reveal = ConcealedRevealModel()
+    @ObservedObject var preferences = AppPreferences.shared
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            preview
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            Divider()
-            information
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-
-    @ViewBuilder
-    private var preview: some View {
-        if let item {
-            switch item.kind {
-            case .color:
-                ColorPreview(item: item)
-            case .image:
-                ImagePreview(item: item, historyStore: historyStore)
-            case .file, .link, .text:
-                TextPreview(item: item)
+            if let item {
+                HStack {
+                    Text(typeTitle(item)).font(.system(size: 11.5, weight: .semibold)).foregroundStyle(.secondary)
+                    Spacer()
+                    Button { onCopy(item) } label: { Image(systemName: "doc.on.doc") }.help("Copy to clipboard")
+                    Button { onPin(item) } label: {
+                        Image(systemName: item.isPinned ? "pin.fill" : "pin")
+                            .foregroundColor(item.isPinned ? .accentColor : .secondary)
+                    }.help(item.isPinned ? "Unpin item" : "Pin item")
+                }.buttonStyle(.borderless).padding(.horizontal, 20).frame(height: 46)
+                preview(item).frame(maxWidth: .infinity, maxHeight: .infinity)
+                Divider()
+                VStack(spacing: 10) {
+                    infoRow("Source", item.sourceAppName ?? "Unknown App", icon: SourceAppIcon.image(for: item.sourceBundleIdentifier))
+                    infoRow("Copied", RelativeDateTimeFormatter().localizedString(for: item.copiedAt, relativeTo: Date()) + "  " + item.copiedAt.formatted(date: .abbreviated, time: .standard))
+                    infoRow("Size", sizeDescription(item))
+                    infoRow("Used", "Pasted \(item.useCount) \(item.useCount == 1 ? "time" : "times")")
+                }.font(.system(size: 11.5)).padding(20)
+            } else {
+                VStack(spacing: 10) {
+                    Image(systemName: "doc.on.clipboard").font(.system(size: 34)).foregroundStyle(.tertiary)
+                    Text("Select an item to preview").font(.system(size: 13)).foregroundStyle(.secondary)
+                }.frame(maxWidth: .infinity, maxHeight: .infinity)
             }
-        } else {
-            EmptyDetailView()
-        }
+        }.frame(maxWidth: .infinity, maxHeight: .infinity)
+            .onChange(of: item?.id) { _ in reveal.reset() }
+            .onDisappear { reveal.reset() }
     }
 
-    private var information: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("Information")
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(.secondary)
-
+    @ViewBuilder private func preview(_ item: ClipboardItem) -> some View {
+        switch item.kind {
+        case .image:
+            ClipboardImageView(item: item, historyStore: historyStore, maxPixelSize: 1600)
+                .padding(20).background(Checkerboard().opacity(0.18)).padding(.horizontal, 20).padding(.bottom, 20)
+        case .color:
+            ColorDetail(item: item, onCopy: onCopyText).padding(.horizontal, 20).padding(.bottom, 20)
+        case .code:
             VStack(spacing: 0) {
-                infoRow("Source", item?.sourceAppName ?? "-")
-                infoRow("Content type", item?.kind.title ?? "-")
-                if let item,
-                   shouldShowTextMetrics(for: item) {
-                    infoRow("Characters", "\(textValue(for: item).count)")
-                    infoRow("Words", "\(wordCount(for: item))")
+              ScrollView([.horizontal, .vertical]) {
+                VStack(alignment: .leading, spacing: 0) {
+                    HStack {
+                        Text(CodeDetector.language(for: item.previewText) ?? "Code")
+                        Spacer()
+                        Text("\(item.previewText.components(separatedBy: "\n").count) \(item.previewText.contains("\n") ? "lines" : "line")")
+                    }.font(.system(size: 11)).foregroundStyle(.secondary).padding(12)
+                    Divider()
+                    HStack(alignment: .top, spacing: 12) {
+                        Text((1...max(1, item.previewText.components(separatedBy: "\n").count)).map(String.init).joined(separator: "\n"))
+                            .foregroundStyle(.tertiary)
+                        Text(item.previewText).textSelection(.enabled)
+                    }.font(.system(size: 12, design: .monospaced)).lineSpacing(5).padding(14)
+                }.frame(minWidth: 470, alignment: .leading)
+              }
+                .frame(height: min(224, CGFloat(item.previewText.components(separatedBy: "\n").count) * 20 + 54))
+                .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 10))
+                .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Color.primary.opacity(0.08)))
+              Spacer(minLength: 0)
+            }.padding(.horizontal, 20).padding(.bottom, 20)
+        case .link:
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    if let url = URL(string: item.previewText), ["https", "http"].contains(url.scheme?.lowercased() ?? "") {
+                        Label(url.host ?? "Website", systemImage: "globe").font(.system(size: 14, weight: .semibold))
+                        if WebsitePreviewPolicy.permits(url, enabled: preferences.fetchLinkPreviews) {
+                            WebsitePreview(url: url).id(url)
+                        }
+                        Text(item.title).font(.system(size: 17, weight: .medium)).textSelection(.enabled)
+                        Text(item.previewText).font(.system(size: 12)).foregroundColor(.accentColor).textSelection(.enabled)
+                        Button("Open in Browser") { NSWorkspace.shared.open(url) }
+                    } else { Text(item.previewText).textSelection(.enabled) }
+                }.frame(maxWidth: .infinity, alignment: .leading).padding(20)
+                    .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 12)).padding(20)
+            }
+        case .concealed:
+            VStack(spacing: 14) {
+                Image(systemName: reveal.text == nil ? "lock.shield" : "lock.open").font(.system(size: 36)).foregroundColor(PL.Functional.typeConcealed)
+                Text("Concealed content").font(PL.Font.titleLarge)
+                Text(reveal.text ?? "••••••••••••••••").font(.system(size: 14, design: .monospaced)).lineLimit(6)
+                Text("Hidden for your privacy. Automatically deleted after 24 hours.")
+                    .font(.system(size: 12)).foregroundStyle(.secondary).multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true).frame(maxWidth: .infinity)
+                Button(reveal.text == nil ? "Reveal Content" : "Hide Content") {
+                    if reveal.text != nil { reveal.reset() }
+                    else { reveal.show(item) { try await historyStore.resolve($0) } }
                 }
-                infoRow("Created", item?.copiedAt.formatted(date: .abbreviated, time: .standard) ?? "-")
+                if let error = reveal.errorMessage { Text(error).font(.caption).foregroundColor(.red) }
+            }.padding(28).frame(maxWidth: .infinity)
+        case .file:
+            ScrollView {
+                VStack(alignment: .leading, spacing: 10) {
+                    ForEach(item.previewText.components(separatedBy: "\n"), id: \.self) { path in
+                        HStack(spacing: 12) {
+                            Image(nsImage: NSWorkspace.shared.icon(forFile: path)).resizable().frame(width: 36, height: 36)
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(URL(fileURLWithPath: path).lastPathComponent).font(.system(size: 13, weight: .medium))
+                                Text(path).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(2).textSelection(.enabled)
+                            }
+                            Spacer()
+                            Button { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)]) } label: {
+                                Image(systemName: "magnifyingglass")
+                            }.help("Reveal in Finder")
+                        }.padding(12).background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 10))
+                    }
+                }.padding(20)
+            }
+        case .text:
+            ScrollView {
+                Text(item.previewText.isEmpty ? item.title : item.previewText)
+                    .font(.system(size: 14)).lineSpacing(7).textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 20).padding(.bottom, 20)
             }
         }
-        .padding(.horizontal, 18)
-        .padding(.vertical, 14)
-        .frame(maxWidth: .infinity, alignment: .leading)
     }
-
-    private func infoRow(_ label: String, _ value: String) -> some View {
-        VStack(spacing: 0) {
-            HStack {
-                Text(label)
-                    .foregroundStyle(.secondary)
-                    .font(.system(size: 11, weight: .semibold))
-                Spacer()
-                Text(value)
-                    .font(.system(size: 11))
-                    .lineLimit(1)
-            }
-            .padding(.vertical, 6)
-
-            Divider()
+    private func infoRow(_ label: String, _ value: String, icon: NSImage? = nil) -> some View {
+        HStack {
+            Text(label).foregroundStyle(.secondary)
+            Spacer(minLength: 12)
+            if let icon { Image(nsImage: icon).resizable().frame(width: 14, height: 14) }
+            Text(value).lineLimit(1).truncationMode(.middle).help(value)
         }
     }
-
-    private func shouldShowTextMetrics(for item: ClipboardItem) -> Bool {
-        item.kind == .text || item.kind == .link || item.kind == .color
+    private func typeTitle(_ item: ClipboardItem) -> String {
+        if item.kind == .code { return "CODE · \((CodeDetector.language(for: item.previewText) ?? "Code").uppercased())" }
+        return item.kind.title.uppercased()
     }
-
-    private func textValue(for item: ClipboardItem) -> String {
-        item.previewText.isEmpty ? item.title : item.previewText
-    }
-
-    private func wordCount(for item: ClipboardItem) -> Int {
-        textValue(for: item)
-            .split { $0.isWhitespace || $0.isNewline }
-            .count
+    private func sizeDescription(_ item: ClipboardItem) -> String {
+        let bytes = ByteCountFormatter.string(fromByteCount: Int64(item.assetByteCount), countStyle: .file)
+        return [.text, .code, .link, .color].contains(item.kind) ? "\(item.previewText.count) characters · \(bytes)" : bytes
     }
 }
 
-private struct TextPreview: View {
-    let item: ClipboardItem
+private struct WebsitePreview: View {
+    let url: URL
+    @State private var metadata: LPLinkMetadata?
+    @State private var provider: LPMetadataProvider?
+    var body: some View {
+        Group {
+            if let metadata {
+                NativeLinkCard(metadata: metadata).frame(maxWidth: .infinity).frame(height: 170)
+            } else { Color.clear.frame(height: 1) }
+        }
+        .onAppear {
+            let provider = LPMetadataProvider()
+            provider.timeout = 6
+            self.provider = provider
+            provider.startFetchingMetadata(for: url) { metadata, _ in
+                Task { @MainActor in self.metadata = metadata }
+            }
+        }
+        .onDisappear { provider?.cancel(); provider = nil }
+    }
+}
 
+private struct NativeLinkCard: NSViewRepresentable {
+    let metadata: LPLinkMetadata
+    func makeNSView(context: Context) -> LPLinkView { LPLinkView(metadata: metadata) }
+    func updateNSView(_ view: LPLinkView, context: Context) { view.metadata = metadata }
+}
+
+private struct Checkerboard: View {
+    var body: some View {
+        Canvas { context, size in
+            for x in stride(from: 0, to: size.width, by: 12) {
+                for y in stride(from: 0, to: size.height, by: 12) where (Int(x / 12) + Int(y / 12)) % 2 == 0 {
+                    context.fill(Path(CGRect(x: x, y: y, width: 12, height: 12)), with: .color(.secondary))
+                }
+            }
+        }
+    }
+}
+
+private struct ColorDetail: View {
+    let item: ClipboardItem
+    let onCopy: (String) -> Void
+    private var values: [(String, String)] {
+        guard let c = ColorDetector.color(from: item.previewText)?.usingColorSpace(.sRGB) else { return [("HEX", item.previewText)] }
+        let r = c.redComponent, g = c.greenComponent, b = c.blueComponent
+        let high = max(r, g, b), low = min(r, g, b), delta = high - low, l = (high + low) / 2
+        let s = delta == 0 ? 0 : delta / (1 - abs(2 * l - 1))
+        var h: CGFloat = 0
+        if delta != 0 {
+            if high == r { h = ((g - b) / delta).truncatingRemainder(dividingBy: 6) }
+            else if high == g { h = (b - r) / delta + 2 }
+            else { h = (r - g) / delta + 4 }
+            h *= 60
+            if h < 0 { h += 360 }
+        }
+        let rgb = "\(Int((r * 255).rounded())), \(Int((g * 255).rounded())), \(Int((b * 255).rounded()))"
+        let hsl = "\(Int(h.rounded())), \(Int((s * 100).rounded()))%, \(Int((l * 100).rounded()))%"
+        let alpha = String(format: "%.3g", Double(c.alphaComponent))
+        return [("HEX", item.previewText.uppercased()),
+                (c.alphaComponent < 1 ? "RGBA" : "RGB", c.alphaComponent < 1 ? "rgba(\(rgb), \(alpha))" : "rgb(\(rgb))"),
+                (c.alphaComponent < 1 ? "HSLA" : "HSL", c.alphaComponent < 1 ? "hsla(\(hsl), \(alpha))" : "hsl(\(hsl))"),
+                ("SwiftUI", String(format: "Color(.sRGB, red: %.3f, green: %.3f, blue: %.3f, opacity: %.3f)", Double(r), Double(g), Double(b), Double(c.alphaComponent)))]
+    }
     var body: some View {
         ScrollView {
-            Text(item.previewText.isEmpty ? item.title : item.previewText)
-                .font(.system(size: 13))
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 20)
-                .padding(.vertical, 16)
-        }
-    }
-}
-
-private struct ColorPreview: View {
-    let item: ClipboardItem
-
-    var body: some View {
-        VStack(spacing: 18) {
-            if let color = ColorDetector.color(from: item.previewText) {
-                Circle()
-                    .fill(Color(nsColor: color))
-                    .frame(width: 104, height: 104)
-                    .shadow(radius: 12)
+            VStack(spacing: 8) {
+                if let color = ColorDetector.color(from: item.previewText) {
+                    RoundedRectangle(cornerRadius: 12).fill(Color(nsColor: color)).frame(height: 68)
+                }
+                ForEach(values, id: \.0) { label, value in
+                    Button { onCopy(value) } label: {
+                        HStack(alignment: .top) {
+                            Text(label).font(.system(size: 11, weight: .medium)).foregroundStyle(.secondary).frame(width: 54, alignment: .leading)
+                            Text(value).font(.system(size: 11.5, design: .monospaced)).lineLimit(1).truncationMode(.middle)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                            Image(systemName: "doc.on.doc").font(.system(size: 11)).foregroundStyle(.secondary)
+                        }.padding(8).background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 7))
+                    }.buttonStyle(.plain).help("Copy \(label)")
+                }
             }
-            Text(item.previewText)
-                .font(.system(size: 16, weight: .medium, design: .monospaced))
         }
-    }
-}
-
-private struct ImagePreview: View {
-    let item: ClipboardItem
-    @ObservedObject var historyStore: SQLiteHistoryStore
-
-    var body: some View {
-        ClipboardImageView(item: item, historyStore: historyStore, maxPixelSize: 1600)
-            .padding(24)
-    }
-}
-
-private struct EmptyDetailView: View {
-    var body: some View {
-        VStack(spacing: 8) {
-            Image(systemName: "clipboard")
-                .font(.system(size: 28))
-            Text("No Selection")
-                .font(.system(size: 13, weight: .semibold))
-        }
-        .foregroundStyle(.secondary)
     }
 }

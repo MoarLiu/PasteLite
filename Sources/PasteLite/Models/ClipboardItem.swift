@@ -7,6 +7,8 @@ enum ClipboardKind: String, CaseIterable, Codable, Identifiable, Sendable {
     case color
     case image
     case file
+    case code
+    case concealed
 
     var id: String { rawValue }
 
@@ -17,28 +19,32 @@ enum ClipboardKind: String, CaseIterable, Codable, Identifiable, Sendable {
         case .color: "Color"
         case .image: "Image"
         case .file: "File"
+        case .code: "Code"
+        case .concealed: "Concealed"
         }
     }
 }
 
 enum HistoryFilter: String, CaseIterable, Identifiable {
     case all
+    case pinned
     case text
     case image
-    case file
     case link
+    case file
     case color
 
     var id: String { rawValue }
 
     var title: String {
         switch self {
-        case .all: "All Types"
-        case .text: "Text Only"
-        case .image: "Images Only"
-        case .file: "Files Only"
-        case .link: "Links Only"
-        case .color: "Colors Only"
+        case .all: "All"
+        case .pinned: "Pinned"
+        case .text: "Text"
+        case .image: "Images"
+        case .file: "Files"
+        case .link: "Links"
+        case .color: "Colors"
         }
     }
 }
@@ -61,6 +67,9 @@ struct ClipboardItem: Identifiable, Hashable, Sendable {
     var previewText: String
     var assets: [ClipboardAsset]
     var hasLoadedAssets: Bool
+    var isPinned: Bool = false
+    var useCount: Int = 0
+    var storedByteCount: Int = 0
 
     init(
         id: UUID = UUID(),
@@ -86,14 +95,28 @@ struct ClipboardItem: Identifiable, Hashable, Sendable {
         self.hasLoadedAssets = hasLoadedAssets
     }
 
-    var assetByteCount: Int {
-        assets.reduce(0) { $0 + $1.data.count }
-    }
+    var assetByteCount: Int { hasLoadedAssets ? assets.reduce(0) { $0 + $1.data.count } : storedByteCount }
+    var isExpired: Bool { kind == .concealed && copiedAt <= Date().addingTimeInterval(-86400) }
 
     var metadataOnly: ClipboardItem {
         var item = self
+        item.storedByteCount = assetByteCount
         item.assets = []
         item.hasLoadedAssets = false
         return item
+    }
+}
+
+extension ClipboardKind {
+    var symbol: String {
+        switch self {
+        case .text: return "text.alignleft"
+        case .link: return "link"
+        case .color: return "paintpalette"
+        case .image: return "photo"
+        case .file: return "folder.fill"
+        case .code: return "chevron.left.forwardslash.chevron.right"
+        case .concealed: return "lock.fill"
+        }
     }
 }

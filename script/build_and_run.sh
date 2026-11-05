@@ -8,9 +8,9 @@ fi
 
 MODE="${1:-run}"
 APP_NAME="PasteLite"
-BUNDLE_ID="com.xia.PasteLite"
-APP_VERSION="${APP_VERSION:-0.2.1}"
-APP_BUILD="${APP_BUILD:-21}"
+BUNDLE_ID="${BUNDLE_ID:-com.xia.PasteLite}"
+APP_VERSION="${APP_VERSION:-0.3.0}"
+APP_BUILD="${APP_BUILD:-30}"
 PASTELITE_UPDATE_CHECK_URL="${PASTELITE_UPDATE_CHECK_URL:-https://api.github.com/repos/MoarLiu/PasteLite/releases/latest}"
 MIN_SYSTEM_VERSION="12.0"
 CONFIGURATION="${CONFIGURATION:-debug}"
@@ -34,6 +34,11 @@ fi
 build_args=(--scratch-path "$SWIFT_BUILD_SCRATCH_PATH" --configuration "$CONFIGURATION" --product "$APP_NAME")
 bin_path_args=(--scratch-path "$SWIFT_BUILD_SCRATCH_PATH" --configuration "$CONFIGURATION" --show-bin-path)
 
+if [[ -n "${SWIFT_BUILD_SYSTEM:-}" ]]; then
+  build_args+=(--build-system "$SWIFT_BUILD_SYSTEM")
+  bin_path_args+=(--build-system "$SWIFT_BUILD_SYSTEM")
+fi
+
 if [[ -n "${SWIFT_BUILD_TRIPLE:-}" ]]; then
   build_args+=(--triple "$SWIFT_BUILD_TRIPLE")
   bin_path_args+=(--triple "$SWIFT_BUILD_TRIPLE")
@@ -55,6 +60,10 @@ fi
 if [[ -f "$RESOURCES_DIR/AppIcon.icns" ]]; then
   cp -X "$RESOURCES_DIR/AppIcon.icns" "$APP_RESOURCES/AppIcon.icns"
 fi
+
+for resource in "$RESOURCES_DIR"/MenuBarIcon*; do
+  [[ -f "$resource" ]] && cp -X "$resource" "$APP_RESOURCES/"
+done
 
 cat >"$INFO_PLIST" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
