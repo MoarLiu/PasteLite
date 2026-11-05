@@ -225,7 +225,7 @@ struct DesignBehaviorTests {
         let release = InstallableRelease(tag_name: "v99.0.0", html_url: URL(string: "https://github.com/MoarLiu/PasteLite")!, assets: [])
         await #expect(throws: ReleaseInstaller.InstallError.self) { _ = try await ReleaseInstaller.stage(release) }
     }
-    
+
     @Test func stableAndBetaVersionsAreComparedInReleaseOrder() {
         #expect(UpdateChecker.compareVersions("v0.3.0-beta.2", "0.3.0-beta.1") == .orderedDescending)
         #expect(UpdateChecker.compareVersions("0.3.0", "0.3.0-beta.10") == .orderedDescending)
