@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.3.2 - 2026-11-06
+
+Version 0.3.2 (build 32).
+
+- Keep concealed-content expiry fixed when reusing a history item, with an independent deadline persisted across restarts.
+- Skip ambiguous clipboard changes during application switches to better respect excluded apps.
+- Restore native Tab navigation, selected-text copying, and focused AppKit control activation.
+- Keep Undo available alongside errors, preserve its payload after a failed restore, and allow retry within the undo window.
+- Show copy failures from the menu bar and make paused recording visible in the history panel.
+- Preserve selection during filtered history updates, choose adjacent items after deletion, and keep the selected item in view.
+- Improve text contrast across all eight accent colors, including selected rows and filter counts.
+- Improve concurrency safety for source-app icons and website previews, and make concealed-reveal expiry tests deterministic.
+
+Upgrade notes: existing history migrates in place. Concealed items saved before this update receive a fixed deadline based on their stored copy time; an earlier original capture time cannot be recovered.
+
 ## 0.3.1 - 2026-11-06
 
 Version 0.3.1 (build 31).

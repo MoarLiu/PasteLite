@@ -14,8 +14,8 @@ jobs:
     runs-on: macos-15-intel
     timeout-minutes: 30
     env:
-      APP_VERSION: "0.3.1"
-      APP_BUILD: "31"
+      APP_VERSION: "0.3.2"
+      APP_BUILD: "32"
       SWIFT_TEST_BUILD_SYSTEM: native
 
     steps:
@@ -27,7 +27,7 @@ jobs:
           swift --version
 
       - name: Run tests
-        run: ./script/run_checks.sh
+        run: ./script/run_checks.sh -Xswiftc -strict-concurrency=complete -Xswiftc -warnings-as-errors
 
       - name: Verify clear on repeated quit
         run: |

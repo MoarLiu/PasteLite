@@ -28,17 +28,17 @@ SwiftUI, AppKit, and SQLite.
 
 ## Downloads
 
-Download [PasteLite 0.3.1](https://github.com/MoarLiu/PasteLite/releases/tag/v0.3.1):
+Download [PasteLite 0.3.2](https://github.com/MoarLiu/PasteLite/releases/tag/v0.3.2):
 
-- [Apple Silicon DMG](https://github.com/MoarLiu/PasteLite/releases/download/v0.3.1/PasteLite-0.3.1-macos-arm64.dmg)
-- [Intel DMG](https://github.com/MoarLiu/PasteLite/releases/download/v0.3.1/PasteLite-0.3.1-macos-x86_64.dmg)
+- [Apple Silicon DMG](https://github.com/MoarLiu/PasteLite/releases/download/v0.3.2/PasteLite-0.3.2-macos-arm64.dmg)
+- [Intel DMG](https://github.com/MoarLiu/PasteLite/releases/download/v0.3.2/PasteLite-0.3.2-macos-x86_64.dmg)
 
 The release is ad-hoc signed and not notarized. If Gatekeeper blocks the first
 launch, use System Settings → Privacy & Security → Open Anyway.
 
 ## Development
 
-Current version: **0.3.1 (build 31)**.
+Current version: **0.3.2 (build 32)**.
 
 Build and test scripts prefer the full Xcode installation at `/Applications/Xcode.app`.
 Set `DEVELOPER_DIR` explicitly to use another toolchain.

@@ -38,17 +38,39 @@ enum PL {
         case green
         case graphite
         var id: String { rawValue }
-        var color: Color {
+        private var rgbHex: UInt32 {
             switch self {
-            case .blue: return Color(hex: 0x0A7CFF)
-            case .purple: return Color(hex: 0xA550F0)
-            case .pink: return Color(hex: 0xF0428A)
-            case .red: return Color(hex: 0xF2464B)
-            case .orange: return Color(hex: 0xF5860A)
-            case .yellow: return Color(hex: 0xE8B100)
-            case .green: return Color(hex: 0x2BB24C)
-            case .graphite: return Color(hex: 0x8A8A90)
+            case .blue: return 0x0A7CFF
+            case .purple: return 0xA550F0
+            case .pink: return 0xF0428A
+            case .red: return 0xF2464B
+            case .orange: return 0xF5860A
+            case .yellow: return 0xE8B100
+            case .green: return 0x2BB24C
+            case .graphite: return 0x8A8A90
             }
+        }
+
+        var color: Color { Color(hex: rgbHex) }
+
+        /// Choose the higher-contrast foreground using the colors actually rendered.
+        var foregroundColor: Color {
+            let bgLuminance = relativeLuminance
+            let darkGray = 0.05
+            let contrastWithWhite = 1.05 / (bgLuminance + 0.05)
+            let contrastWithDark = (bgLuminance + 0.05) / (Self.linearize(darkGray) + 0.05)
+            return contrastWithWhite >= contrastWithDark ? .white : Color(white: darkGray)
+        }
+
+        private var relativeLuminance: Double {
+            let red = Double((rgbHex >> 16) & 0xFF) / 255
+            let green = Double((rgbHex >> 8) & 0xFF) / 255
+            let blue = Double(rgbHex & 0xFF) / 255
+            return 0.2126 * Self.linearize(red) + 0.7152 * Self.linearize(green) + 0.0722 * Self.linearize(blue)
+        }
+
+        private static func linearize(_ component: Double) -> Double {
+            component <= 0.04045 ? component / 12.92 : pow((component + 0.055) / 1.055, 2.4)
         }
     }
 

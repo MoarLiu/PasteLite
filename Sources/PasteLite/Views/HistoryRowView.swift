@@ -5,6 +5,7 @@ struct HistoryRowView: View {
     let item: ClipboardItem
     let isSelected: Bool
     @ObservedObject var historyStore: SQLiteHistoryStore
+    var accent: PL.Accent = .blue
     var shortcut: Int? = nil
     var query = ""
 
@@ -24,19 +25,19 @@ struct HistoryRowView: View {
                     Text(ClipboardTime.relative(item.copiedAt))
                 }
                 .font(.system(size: 11.5))
-                .foregroundColor(isSelected ? .white.opacity(0.8) : .secondary)
+                .foregroundColor(isSelected ? accent.foregroundColor : .secondary)
                 .lineLimit(1)
             }
             Spacer(minLength: 2)
             VStack(alignment: .trailing, spacing: 3) {
                 if let shortcut { Text("⌘\(shortcut)").font(.system(size: 11)) }
                 if item.isPinned { Image(systemName: "pin.fill").font(.system(size: 10)) }
-            }.foregroundColor(isSelected ? .white.opacity(0.8) : .secondary)
+            }.foregroundColor(isSelected ? accent.foregroundColor : .secondary)
         }
-        .foregroundColor(isSelected ? .white : .primary)
+        .foregroundColor(isSelected ? accent.foregroundColor : .primary)
         .padding(.horizontal, 8).padding(.vertical, 7)
         .frame(minHeight: 50)
-        .background(isSelected ? Color.accentColor : .clear, in: RoundedRectangle(cornerRadius: PL.Radius.row))
+        .background(isSelected ? accent.color : .clear, in: RoundedRectangle(cornerRadius: PL.Radius.row))
         .accessibilityElement(children: .combine)
         .accessibilityAddTraits(isSelected ? [.isSelected] : [])
     }
@@ -49,7 +50,7 @@ struct HistoryRowView: View {
         } else {
             Image(systemName: item.kind.symbol)
                 .font(.system(size: 17))
-                .foregroundColor(isSelected ? .white : tint)
+                .foregroundColor(isSelected ? accent.foregroundColor : tint)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background(isSelected ? .white.opacity(0.2) : tint.opacity(0.1))
         }

@@ -159,10 +159,29 @@ private struct WebsitePreview: View {
             provider.timeout = 6
             self.provider = provider
             provider.startFetchingMetadata(for: url) { metadata, _ in
-                Task { @MainActor in self.metadata = metadata }
+                let snapshot = WebsiteMetadataSnapshot(metadata)
+                Task { @MainActor in self.metadata = snapshot?.take() }
             }
         }
         .onDisappear { provider?.cancel(); provider = nil }
+    }
+}
+
+/// Own a separate copy until the main actor consumes it. The mutable object is
+/// private: initialization precedes publication, and all subsequent access is
+/// main-actor isolated. Keep item providers intact when handing off the copy.
+final class WebsiteMetadataSnapshot: @unchecked Sendable {
+    private var metadata: LPLinkMetadata?
+
+    init?(_ metadata: LPLinkMetadata?) {
+        guard let copy = metadata?.copy() as? LPLinkMetadata else { return nil }
+        self.metadata = copy
+    }
+
+    @MainActor
+    func take() -> LPLinkMetadata? {
+        defer { metadata = nil }
+        return metadata
     }
 }
 

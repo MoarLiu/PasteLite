@@ -15,6 +15,7 @@ struct HistoryPanelView: View {
     var onUndo: () -> Void = {}
     var onCopyText: (String) -> Void = { _ in }
     @FocusState private var searchFocused: Bool
+    @State private var scrollProxy: ScrollViewProxy?
     private var filteredItems: [ClipboardItem] { appState.filteredItems(in: historyStore.items) }
     private var selectedItem: ClipboardItem? { appState.selectedItem(in: filteredItems) }
 
@@ -23,6 +24,16 @@ struct HistoryPanelView: View {
             header
             if let message = historyStore.captureErrorMessage ?? historyStore.errorMessage ?? historyStore.storageWarning {
                 banner(message, symbol: "exclamationmark.triangle", color: .orange)
+            }
+            if preferences.recordingPaused {
+                HStack {
+                    Label("Recording paused", systemImage: "pause.circle")
+                    Spacer()
+                    Button("Resume") { preferences.recordingPaused = false }
+                        .buttonStyle(.plain).foregroundColor(.accentColor)
+                }
+                .font(.system(size: 11.5)).padding(.horizontal, 16).padding(.vertical, 6)
+                .background(Color.orange.opacity(0.08))
             }
             if !AccessibilityService.isTrusted(), preferences.selectionAction == .paste {
                 HStack {
@@ -55,9 +66,27 @@ struct HistoryPanelView: View {
         .ignoresSafeArea()
         .accentColor(preferences.accent.color)
         .onAppear { normalize(); searchFocused = true }
-        .onChange(of: historyStore.items) { _ in normalize() }
-        .onChange(of: appState.searchText) { _ in normalize() }
-        .onChange(of: appState.selectedFilter) { _ in normalize() }
+        .onChange(of: historyStore.items) { _ in
+            // Data changed but search/filter stayed the same — keep the current selection.
+            normalize()
+            if let proxy = scrollProxy, let id = selectedItem?.id {
+                proxy.scrollTo(id, anchor: .center)
+            }
+        }
+        .onChange(of: appState.searchText) { _ in
+            // Search criteria changed — reset to first match.
+            appState.normalizeSelection(in: filteredItems, resetIndex: true)
+            if let proxy = scrollProxy, let id = selectedItem?.id {
+                proxy.scrollTo(id, anchor: .center)
+            }
+        }
+        .onChange(of: appState.selectedFilter) { _ in
+            // Filter changed — reset to first match.
+            appState.normalizeSelection(in: filteredItems, resetIndex: true)
+            if let proxy = scrollProxy, let id = selectedItem?.id {
+                proxy.scrollTo(id, anchor: .center)
+            }
+        }
         .onChange(of: appState.presentationVersion) { _ in searchFocused = true; normalize() }
     }
 
@@ -80,15 +109,15 @@ struct HistoryPanelView: View {
                     Button { appState.selectedFilter = filter } label: {
                         HStack(spacing: 4) {
                             Text(filter.title).fontWeight(appState.selectedFilter == filter ? .medium : .regular)
-                            Text("\(count)").opacity(0.65)
+                            Text("\(count)").opacity(appState.selectedFilter == filter ? 1 : 0.65)
                         }
                         .font(.system(size: 11.5)).padding(.horizontal, 9).padding(.vertical, 5)
-                        .foregroundColor(appState.selectedFilter == filter ? .white : .secondary)
+                        .foregroundColor(appState.selectedFilter == filter ? preferences.accent.foregroundColor : .secondary)
                         .background(appState.selectedFilter == filter ? Color.accentColor : .clear, in: Capsule())
                     }.buttonStyle(.plain).accessibilityLabel("\(filter.title), \(count) items")
                 }
                 Spacer(minLength: 0)
-                if preferences.showPreview { KeyCap("⇥"); Text("switch type").font(.system(size: 11)).foregroundStyle(.tertiary) }
+                if preferences.showPreview { KeyCap("↑↓"); Text("navigate").font(.system(size: 11)).foregroundStyle(.tertiary) }
             }.padding(.horizontal, 12).padding(.bottom, 10)
         }
     }
@@ -121,7 +150,8 @@ struct HistoryPanelView: View {
                                         .padding(.horizontal, 8).padding(.top, 12).padding(.bottom, 5)
                                 }
                                 HistoryRowView(item: item, isSelected: selectedItem?.id == item.id,
-                                               historyStore: historyStore, shortcut: index < 9 ? index + 1 : nil,
+                                               historyStore: historyStore, accent: preferences.accent,
+                                               shortcut: index < 9 ? index + 1 : nil,
                                                query: appState.searchText)
                                     .id(item.id).contentShape(Rectangle())
                                     .onTapGesture(count: 2) { appState.selectedItemID = item.id; onPaste(item) }
@@ -130,7 +160,10 @@ struct HistoryPanelView: View {
                             }
                         }.padding(.horizontal, 8).padding(.bottom, 10)
                     }
-                    .onAppear { scroll(proxy) }
+                    .onAppear {
+                        self.scrollProxy = proxy
+                        scroll(proxy)
+                    }
                     .onChange(of: appState.keyboardSelectionVersion) { _ in scroll(proxy) }
                     .onChange(of: appState.searchText) { _ in scroll(proxy) }
                     .onChange(of: appState.selectedFilter) { _ in scroll(proxy) }
@@ -145,11 +178,14 @@ struct HistoryPanelView: View {
             if historyStore.deletedItem != nil {
                 Text("Item deleted").font(.system(size: 11.5)).foregroundStyle(.secondary)
                 Button("Undo ⌘Z", action: onUndo).buttonStyle(.plain).foregroundColor(.accentColor)
+                if let message = appState.statusMessage {
+                    Text(message).font(.system(size: 11.5)).foregroundStyle(.red).lineLimit(1).help(message)
+                }
+            } else if let message = appState.statusMessage {
+                Text(message).font(.system(size: 11.5)).foregroundStyle(.secondary).lineLimit(1).help(message)
             } else if appState.isPerformingClipboardAction {
                 ProgressView().controlSize(.small)
                 Text("Preparing…").font(.system(size: 11.5)).foregroundStyle(.secondary)
-            } else if let message = appState.statusMessage {
-                Text(message).font(.system(size: 11.5)).foregroundStyle(.secondary).lineLimit(1).help(message)
             } else if preferences.showPreview {
                 AppIconView(size: 23)
                 Text("Clipboard History").font(.system(size: 12)).foregroundStyle(.secondary)
@@ -162,8 +198,8 @@ struct HistoryPanelView: View {
                 }.buttonStyle(.plain).disabled(selectedItem == nil || appState.isPerformingClipboardAction)
             }
             Button { if let item = selectedItem { onPaste(item) } } label: {
-                HStack(spacing: 6) { Text(primaryTitle); Text("↩").opacity(0.8) }
-                    .font(.system(size: 12.5, weight: .medium)).foregroundColor(.white)
+                HStack(spacing: 6) { Text(primaryTitle); Text("↩") }
+                    .font(.system(size: 12.5, weight: .medium)).foregroundColor(preferences.accent.foregroundColor)
                     .padding(.horizontal, 13).padding(.vertical, 7)
                     .background(preferences.accent.color, in: RoundedRectangle(cornerRadius: 8))
                     .opacity(selectedItem == nil || appState.isPerformingClipboardAction ? 0.45 : 1)

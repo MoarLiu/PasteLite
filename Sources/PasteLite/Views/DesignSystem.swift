@@ -36,6 +36,7 @@ struct AppIconView: View {
     }
 }
 
+@MainActor
 enum SourceAppIcon {
     private static let cache = NSCache<NSString, NSImage>()
     static func image(for identifier: String?) -> NSImage? {

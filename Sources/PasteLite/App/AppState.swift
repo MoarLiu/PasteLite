@@ -17,6 +17,7 @@ final class AppState: ObservableObject {
         searchText = ""
         actionsPresented = false
         selectedItemID = nil
+        lastResolvedSelectionIndex = nil
         clearStatus()
         presentationVersion += 1
     }
@@ -61,29 +62,37 @@ final class AppState: ObservableObject {
 
     func selectedItem(in items: [ClipboardItem]) -> ClipboardItem? {
         if let selectedItemID,
-           let selected = items.first(where: { $0.id == selectedItemID }) {
-            return selected
+           let index = items.firstIndex(where: { $0.id == selectedItemID }) {
+            lastResolvedSelectionIndex = index
+            return items[index]
         }
         return items.first
     }
 
-    func normalizeSelection(in items: [ClipboardItem]) {
+    private var lastResolvedSelectionIndex: Int?
+
+    func normalizeSelection(in items: [ClipboardItem], resetIndex: Bool = false) {
         guard !items.isEmpty else {
             selectedItemID = nil
+            lastResolvedSelectionIndex = nil
             return
         }
 
-        if let selectedItemID,
-           items.contains(where: { $0.id == selectedItemID }) {
+        if !resetIndex, let selectedItemID,
+           let index = items.firstIndex(where: { $0.id == selectedItemID }) {
+            lastResolvedSelectionIndex = index
             return
         }
 
-        selectedItemID = items.first?.id
+        let fallbackIndex = resetIndex ? 0 : min(lastResolvedSelectionIndex ?? 0, items.count - 1)
+        selectedItemID = items[fallbackIndex].id
+        lastResolvedSelectionIndex = fallbackIndex
     }
 
     func moveSelection(delta: Int, in items: [ClipboardItem]) {
         guard !items.isEmpty else {
             selectedItemID = nil
+            lastResolvedSelectionIndex = nil
             return
         }
 
@@ -92,6 +101,7 @@ final class AppState: ObservableObject {
         } ?? 0
         let targetIndex = min(max(currentIndex + delta, 0), items.count - 1)
         selectedItemID = items[targetIndex].id
+        lastResolvedSelectionIndex = targetIndex
         keyboardSelectionVersion += 1
     }
 }

@@ -43,6 +43,10 @@ final class ClipboardMonitor {
     private let pasteboard: NSPasteboard
     private let preferences: AppPreferences?
     private let sourceApplication: () -> (String?, String?)
+    private var lastSourceApplicationName: String?
+    private var lastSourceBundleIdentifier: String?
+    private var sourceApplicationDidChange = false
+    private var sourceActivationObserver: NSObjectProtocol?
     private let pollInterval: TimeInterval = 0.5
     private let maxAssetByteCount = 20 * 1024 * 1024
     private let maxItemByteCount = 64 * 1024 * 1024
@@ -63,10 +67,24 @@ final class ClipboardMonitor {
         self.preferences = preferences
         self.sourceApplication = sourceApplication
         self.lastChangeCount = pasteboard.changeCount
+        let initialSource = sourceApplication()
+        self.lastSourceApplicationName = initialSource.0
+        self.lastSourceBundleIdentifier = initialSource.1
     }
 
     func start() {
         guard timer == nil else { return }
+        if sourceActivationObserver == nil {
+            sourceActivationObserver = NSWorkspace.shared.notificationCenter.addObserver(
+                forName: NSWorkspace.didActivateApplicationNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                // The observer runs on the main queue. Mark the switch before
+                // the next poll, rather than deferring it to another task.
+                MainActor.assumeIsolated { self?.sourceApplicationDidChange = true }
+            }
+        }
         let timer = Timer(timeInterval: pollInterval, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 await self?.checkForChanges()
@@ -80,10 +98,22 @@ final class ClipboardMonitor {
         timer?.invalidate()
         timer = nil
         captureTask?.cancel()
+        if let sourceActivationObserver {
+            NSWorkspace.shared.notificationCenter.removeObserver(sourceActivationObserver)
+        }
+        sourceActivationObserver = nil
     }
 
     func checkForChanges() async {
         guard captureTask == nil, let historyStore else { return }
+        let source = sourceApplication()
+        let sourceChanged = sourceApplicationDidChange ||
+            source.1 != lastSourceBundleIdentifier ||
+            (source.1 == nil && source.0 != lastSourceApplicationName)
+        sourceApplicationDidChange = false
+        lastSourceApplicationName = source.0
+        lastSourceBundleIdentifier = source.1
+
         let currentChangeCount = pasteboard.changeCount
         guard currentChangeCount != lastChangeCount else { return }
         lastChangeCount = currentChangeCount
@@ -92,6 +122,9 @@ final class ClipboardMonitor {
         if PasteLitePasteboardWriteGuard.consumeIfSelfWrite(changeCount: currentChangeCount, on: pasteboard) {
             return
         }
+        // A pasteboard change observed during an app switch cannot be attributed safely.
+        // Drop it rather than risk recording content copied from an excluded application.
+        guard !sourceChanged else { return }
 
         let rootTypes = Set(pasteboard.types ?? [])
         let allTypes = rootTypes.union(pasteboard.pasteboardItems?.flatMap(\.types) ?? [])
@@ -103,7 +136,7 @@ final class ClipboardMonitor {
             return
         }
 
-        let (sourceName, sourceIdentifier) = sourceApplication()
+        let (sourceName, sourceIdentifier) = source
         guard !((sourceIdentifier.map { preferences?.excludedApps.contains($0) == true }) ?? false) else { return }
         let copiedAt = Date()
         let generation = historyStore.captureGeneration
@@ -147,6 +180,7 @@ final class ClipboardMonitor {
                   !concealed || self.preferences?.sensitivePolicy == .masked else { return }
             if concealed {
                 item.kind = .concealed
+                item.expiresAt = item.copiedAt.addingTimeInterval(86400)
                 item.title = "Concealed content"
                 item.previewText = ""
             }

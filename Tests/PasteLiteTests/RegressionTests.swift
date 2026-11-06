@@ -7,9 +7,9 @@ import Testing
 @MainActor
 struct RegressionTests {
     @Test
-    func developmentVersionIs031() {
-        #expect(AppInfo.fallbackVersion == "0.3.1")
-        #expect(AppInfo.fallbackBuild == "31")
+    func developmentVersionIs032() {
+        #expect(AppInfo.fallbackVersion == "0.3.2")
+        #expect(AppInfo.fallbackBuild == "32")
     }
 
     @Test
@@ -44,6 +44,100 @@ struct RegressionTests {
         #expect(editor.hasMarkedText())
         panel.sendEvent(try keyEvent(keyCode, characters: keyCode == 36 ? "\r" : "", panel: panel))
         #expect(historyActions == 0)
+    }
+
+    @Test
+    func tabUsesNativeFocusNavigationInsteadOfCyclingFilters() throws {
+        let (panel, _) = try editingPanel()
+        var filterCycles = 0
+        panel.onCycleFilter = { _ in filterCycles += 1 }
+        panel.sendEvent(try keyEvent(48, characters: "\t", panel: panel))
+        #expect(filterCycles == 0)
+    }
+
+    @Test
+    func commandCWithSelectedTextUsesNativeEventHandling() throws {
+        let panel = makePanel()
+        let textView = CopyTrackingTextView(frame: NSRect(x: 0, y: 0, width: 300, height: 80))
+        textView.string = "selected text"
+        textView.setSelectedRange(NSRange(location: 0, length: 8))
+        panel.contentView?.addSubview(textView)
+        #expect(panel.makeFirstResponder(textView))
+        var historyCopies = 0
+        panel.onCopyAction = { historyCopies += 1 }
+
+        panel.sendEvent(try keyEvent(8, characters: "c", panel: panel, modifierFlags: .command))
+        #expect(historyCopies == 0)
+        #expect(textView.keyDownCount == 1)
+    }
+
+    @Test
+    func returnActivatesFocusedButtonInsteadOfHistoryAction() throws {
+        let panel = makePanel()
+        let button = ReturnTrackingButton(frame: NSRect(x: 0, y: 0, width: 120, height: 30))
+        button.keyEquivalent = "\r"
+        panel.contentView?.addSubview(button)
+        #expect(panel.makeFirstResponder(button))
+        var historyActions = 0
+        panel.onReturnAction = { historyActions += 1 }
+
+        panel.sendEvent(try keyEvent(36, characters: "\r", panel: panel))
+        #expect(historyActions == 0)
+        #expect(button.clickCount == 1)
+    }
+
+    @Test
+    func returnInSearchStillDispatchesHistoryAction() throws {
+        let (panel, _) = try editingPanel()
+        var historyActions = 0
+        panel.onReturnAction = { historyActions += 1 }
+        panel.sendEvent(try keyEvent(36, characters: "\r", panel: panel))
+        #expect(historyActions == 1)
+    }
+
+    @Test
+    func failedUndoRetainsPayloadAndCanRetryAfterStorageRecovers() async throws {
+        try await withFixture { store, board, url in
+            let original = item("Undo retry payload")
+            #expect(await store.add(original) == .success)
+            let state = AppState()
+            state.normalizeSelection(in: store.items)
+            state.showStatus("Earlier failure")
+            let controller = HistoryPanelController(appState: state, historyStore: store,
+                pasteService: PasteService(historyStore: store, pasteboard: board))
+            defer { controller.close() }
+            let panel = try #require(controller.window as? HistoryPanel)
+            @MainActor func waitUntil(_ condition: () -> Bool) async throws {
+                for _ in 0..<100 {
+                    if condition() { return }
+                    try await Task.sleep(nanoseconds: 10_000_000)
+                }
+                try #require(condition())
+            }
+
+            panel.onDeleteAction?()
+            try await waitUntil { store.deletedItem != nil && state.statusMessage == nil }
+            #expect(store.items.isEmpty)
+
+            let database = try SQLiteDatabase(url: url)
+            try database.execute("""
+                CREATE TRIGGER reject_restore BEFORE INSERT ON history_items
+                BEGIN SELECT RAISE(ABORT, 'test restore failure'); END;
+                """)
+            panel.onUndo?()
+            try await waitUntil { state.statusMessage != nil }
+            #expect(store.deletedItem?.id == original.id)
+            #expect(store.deletedItem?.assets.map(\.data) == original.assets.map(\.data))
+
+            try database.execute("DROP TRIGGER reject_restore;")
+            panel.onUndo?()
+            try await waitUntil {
+                store.deletedItem == nil && store.items.contains(where: { $0.id == original.id }) &&
+                    state.statusMessage == nil
+            }
+            let restored = try #require(store.items.first)
+            #expect(try await store.resolve(restored).assets.map(\.data) == original.assets.map(\.data))
+        }
     }
 
     @Test
@@ -480,8 +574,9 @@ private func editingPanel() throws -> (HistoryPanel, NSTextView) {
 }
 
 @MainActor
-private func keyEvent(_ keyCode: UInt16, characters: String, panel: HistoryPanel) throws -> NSEvent {
-    try #require(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
+private func keyEvent(_ keyCode: UInt16, characters: String, panel: HistoryPanel,
+                      modifierFlags: NSEvent.ModifierFlags = []) throws -> NSEvent {
+    try #require(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: modifierFlags, timestamp: 0,
         windowNumber: panel.windowNumber, context: nil, characters: characters, charactersIgnoringModifiers: characters,
         isARepeat: false, keyCode: keyCode))
 }
@@ -497,6 +592,21 @@ private func png(width: Int, height: Int) throws -> Data {
     CGImageDestinationAddImage(destination, image, nil)
     #expect(CGImageDestinationFinalize(destination))
     return data as Data
+}
+
+@MainActor
+private final class CopyTrackingTextView: NSTextView {
+    var keyDownCount = 0
+    override func keyDown(with event: NSEvent) {
+        keyDownCount += 1
+        super.keyDown(with: event)
+    }
+}
+
+@MainActor
+private final class ReturnTrackingButton: NSButton {
+    var clickCount = 0
+    override func performClick(_ sender: Any?) { clickCount += 1 }
 }
 
 @MainActor

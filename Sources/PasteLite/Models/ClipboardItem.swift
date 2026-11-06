@@ -63,6 +63,7 @@ struct ClipboardItem: Identifiable, Hashable, Sendable {
     var sourceAppName: String?
     var sourceBundleIdentifier: String?
     var copiedAt: Date
+    var expiresAt: Date?
     var contentHash: String
     var previewText: String
     var assets: [ClipboardAsset]
@@ -78,6 +79,7 @@ struct ClipboardItem: Identifiable, Hashable, Sendable {
         sourceAppName: String? = nil,
         sourceBundleIdentifier: String? = nil,
         copiedAt: Date = Date(),
+        expiresAt: Date? = nil,
         contentHash: String,
         previewText: String,
         assets: [ClipboardAsset],
@@ -89,6 +91,7 @@ struct ClipboardItem: Identifiable, Hashable, Sendable {
         self.sourceAppName = sourceAppName
         self.sourceBundleIdentifier = sourceBundleIdentifier
         self.copiedAt = copiedAt
+        self.expiresAt = expiresAt ?? (kind == .concealed ? copiedAt.addingTimeInterval(86400) : nil)
         self.contentHash = contentHash
         self.previewText = previewText
         self.assets = assets
@@ -96,7 +99,10 @@ struct ClipboardItem: Identifiable, Hashable, Sendable {
     }
 
     var assetByteCount: Int { hasLoadedAssets ? assets.reduce(0) { $0 + $1.data.count } : storedByteCount }
-    var isExpired: Bool { kind == .concealed && copiedAt <= Date().addingTimeInterval(-86400) }
+    var isExpired: Bool {
+        guard kind == .concealed else { return false }
+        return (expiresAt ?? copiedAt.addingTimeInterval(86400)) <= Date()
+    }
 
     var metadataOnly: ClipboardItem {
         var item = self

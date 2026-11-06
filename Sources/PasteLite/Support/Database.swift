@@ -214,6 +214,11 @@ final class SQLiteStatement {
         sqlite3_column_double(statement, index)
     }
 
+    func columnOptionalDouble(at index: Int32) -> Double? {
+        guard sqlite3_column_type(statement, index) != SQLITE_NULL else { return nil }
+        return sqlite3_column_double(statement, index)
+    }
+
     func columnData(at index: Int32) -> Data {
         let byteCount = sqlite3_column_bytes(statement, index)
         guard byteCount > 0, let bytes = sqlite3_column_blob(statement, index) else {

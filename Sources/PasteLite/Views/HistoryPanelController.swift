@@ -157,7 +157,12 @@ final class HistoryPanelController: NSWindowController {
             guard self.finishClipboardAction(id: id) else { return }
             if result.isSuccess { await self.historyStore.recordUse(item) }
             self.appState.apply(result)
-            if result.isSuccess, dismissOnSuccess { self.hidePanel() }
+            if result.isSuccess, dismissOnSuccess {
+                self.hidePanel()
+            } else if !result.isSuccess, self.window?.isVisible != true {
+                self.window?.orderFrontRegardless()
+                self.window?.makeKey()
+            }
         }
     }
 
@@ -198,7 +203,13 @@ final class HistoryPanelController: NSWindowController {
     private func undoDelete() {
         Task { [weak self] in
             guard let self else { return }
-            if case let .failure(message) = await self.historyStore.undoDelete() { self.appState.showStatus(message) }
+            switch await self.historyStore.undoDelete() {
+            case .success:
+                self.appState.clearStatus()
+            case let .failure(message):
+                // Keep deletedItem so the user can retry undo after the storage issue resolves.
+                self.appState.showStatus(message, clearAfter: 6)
+            }
         }
     }
 
@@ -208,7 +219,8 @@ final class HistoryPanelController: NSWindowController {
             guard let self else { return }
             switch await self.historyStore.remove(id: item.id) {
             case .success:
-                self.appState.showStatus("Removed from history.")
+                // Undo is the success feedback; don't leave a stale error beside it.
+                self.appState.clearStatus()
             case let .failure(message):
                 self.appState.showStatus(message)
             }
@@ -426,14 +438,25 @@ final class HistoryPanel: NSPanel {
             return
         }
         let isEditingText = firstResponder is NSTextView || firstResponder is NSTextField
+        let hasSelectedText: Bool
+        if let textView = firstResponder as? NSTextView {
+            hasSelectedText = textView.selectedRange().length > 0
+        } else if let textField = firstResponder as? NSTextField {
+            hasSelectedText = (textField.currentEditor()?.selectedRange.length ?? 0) > 0
+        } else {
+            hasSelectedText = false
+        }
+        let isActionControlFocused = firstResponder is NSButton || firstResponder is NSSegmentedControl
         let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
             .subtracting([.capsLock, .numericPad, .function])
         if modifiers == .command {
             switch event.charactersIgnoringModifiers?.lowercased() {
-            case "c": onCopyAction?(); return
+            case "c":
+                if hasSelectedText { super.sendEvent(event) } else { onCopyAction?() }
+                return
             case "k": onActions?(); return
             case "z":
-                if canUndoDeletion?() == true { onUndo?(); return }
+                if !isEditingText, canUndoDeletion?() == true { onUndo?(); return }
             case let value?:
                 if let number = Int(value), (1...9).contains(number) { onNumber?(number - 1); return }
             default: break
@@ -461,13 +484,12 @@ final class HistoryPanel: NSPanel {
             if modifiers == .command { onJump?(true) }
             else if modifiers.isEmpty { onMoveSelection?(1) } else { super.sendEvent(event) }
         case 48:
-            if modifiers.isEmpty || modifiers == .shift { onCycleFilter?(modifiers == .shift) }
-            else { super.sendEvent(event) }
+            super.sendEvent(event)
         case 36, 76:
             if modifiers == .option {
                 if let onAlternateReturnAction { onAlternateReturnAction() } else { onCopyAction?() }
             } else if modifiers.isEmpty {
-                onReturnAction?()
+                if isActionControlFocused { super.sendEvent(event) } else { onReturnAction?() }
             } else {
                 super.sendEvent(event)
             }

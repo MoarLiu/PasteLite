@@ -10,5 +10,6 @@ DerivedData/
 *.xcworkspace/xcuserdata/
 *.xcodeproj/xcuserdata/
 work/
+.workbuddy/
 /PasteLite-Design-Kit/
 /PasteLite-Design-Kit.zip

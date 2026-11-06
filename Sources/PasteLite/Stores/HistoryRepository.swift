@@ -259,7 +259,7 @@ actor HistoryRepository {
         items.sort { $0.copiedAt > $1.copiedAt }
         var count = 0
         items.removeAll {
-            if $0.kind == .concealed && $0.copiedAt < Date().addingTimeInterval(-86400) { return true }
+            if $0.isExpired { return true }
             if $0.isPinned { return false }
             count += 1
             return count > limit
@@ -267,8 +267,8 @@ actor HistoryRepository {
     }
 
     private func expireSensitive(database: SQLiteDatabase) throws {
-        let statement = try database.prepare("DELETE FROM history_items WHERE kind = 'concealed' AND copied_at <= ?;")
-        try statement.bind(Date().addingTimeInterval(-86400).timeIntervalSince1970, at: 1)
+        let statement = try database.prepare("DELETE FROM history_items WHERE kind = 'concealed' AND COALESCE(expires_at, copied_at + 86400) <= ?;")
+        try statement.bind(Date().timeIntervalSince1970, at: 1)
         try statement.run()
     }
 
@@ -331,6 +331,7 @@ actor HistoryRepository {
                 source_app_name TEXT,
                 source_bundle_identifier TEXT,
                 copied_at REAL NOT NULL,
+                expires_at REAL,
                 content_hash TEXT NOT NULL UNIQUE,
                 preview_text TEXT NOT NULL
             );
@@ -361,7 +362,9 @@ actor HistoryRepository {
         try database.transaction {
             if !names.contains("is_pinned") { try database.execute("ALTER TABLE history_items ADD COLUMN is_pinned INTEGER NOT NULL DEFAULT 0;") }
             if !names.contains("use_count") { try database.execute("ALTER TABLE history_items ADD COLUMN use_count INTEGER NOT NULL DEFAULT 0;") }
-            try database.execute("PRAGMA user_version = 2;")
+            if !names.contains("expires_at") { try database.execute("ALTER TABLE history_items ADD COLUMN expires_at REAL;") }
+            try database.execute("UPDATE history_items SET expires_at = copied_at + 86400 WHERE kind = 'concealed' AND expires_at IS NULL;")
+            try database.execute("PRAGMA user_version = 3;")
         }
     }
 
@@ -375,9 +378,10 @@ actor HistoryRepository {
                 source_app_name,
                 source_bundle_identifier,
                 copied_at,
+                expires_at,
                 content_hash,
                 preview_text, is_pinned, use_count
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
             """
         )
         try itemStatement.bind(item.id.uuidString, at: 1)
@@ -386,10 +390,15 @@ actor HistoryRepository {
         try itemStatement.bind(item.sourceAppName, at: 4)
         try itemStatement.bind(item.sourceBundleIdentifier, at: 5)
         try itemStatement.bind(item.copiedAt.timeIntervalSince1970, at: 6)
-        try itemStatement.bind(item.contentHash, at: 7)
-        try itemStatement.bind(item.previewText, at: 8)
-        try itemStatement.bind(Int64(item.isPinned ? 1 : 0), at: 9)
-        try itemStatement.bind(Int64(item.useCount), at: 10)
+        if let expiresAt = item.expiresAt {
+            try itemStatement.bind(expiresAt.timeIntervalSince1970, at: 7)
+        } else {
+            try itemStatement.bindNull(at: 7)
+        }
+        try itemStatement.bind(item.contentHash, at: 8)
+        try itemStatement.bind(item.previewText, at: 9)
+        try itemStatement.bind(Int64(item.isPinned ? 1 : 0), at: 10)
+        try itemStatement.bind(Int64(item.useCount), at: 11)
         try itemStatement.run()
 
         for asset in item.assets {
@@ -449,6 +458,7 @@ actor HistoryRepository {
                 source_app_name,
                 source_bundle_identifier,
                 copied_at,
+                expires_at,
                 content_hash,
                 preview_text, is_pinned, use_count,
                 (SELECT COALESCE(SUM(byte_count), 0) FROM history_assets WHERE history_id = history_items.id)
@@ -469,8 +479,8 @@ actor HistoryRepository {
                 let title = statement.columnString(at: 1),
                 let kindText = statement.columnString(at: 2),
                 let kind = ClipboardKind(rawValue: kindText),
-                let contentHash = statement.columnString(at: 6),
-                let previewText = statement.columnString(at: 7)
+                let contentHash = statement.columnString(at: 7),
+                let previewText = statement.columnString(at: 8)
             else {
                 continue
             }
@@ -482,14 +492,15 @@ actor HistoryRepository {
                     sourceAppName: statement.columnString(at: 3),
                     sourceBundleIdentifier: statement.columnString(at: 4),
                     copiedAt: Date(timeIntervalSince1970: statement.columnDouble(at: 5)),
+                    expiresAt: statement.columnOptionalDouble(at: 6).map(Date.init(timeIntervalSince1970:)),
                     contentHash: contentHash,
                     previewText: previewText,
                     assets: [],
                     hasLoadedAssets: false
                 )
-            item.isPinned = statement.columnInt64(at: 8) != 0
-            item.useCount = Int(statement.columnInt64(at: 9))
-            item.storedByteCount = Int(statement.columnInt64(at: 10))
+            item.isPinned = statement.columnInt64(at: 9) != 0
+            item.useCount = Int(statement.columnInt64(at: 10))
+            item.storedByteCount = Int(statement.columnInt64(at: 11))
             loadedItems.append(item)
         }
         return loadedItems

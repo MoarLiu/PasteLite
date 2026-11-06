@@ -3,6 +3,7 @@ import SwiftUI
 import Testing
 @testable import PasteLite
 
+#if DEBUG
 @Suite(.serialized)
 @MainActor
 struct DesignSnapshotTests {
@@ -70,3 +71,4 @@ struct DesignSnapshotTests {
         try data.write(to: output.appendingPathComponent(name + ".png"))
     }
 }
+#endif

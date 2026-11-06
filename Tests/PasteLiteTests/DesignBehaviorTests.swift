@@ -74,16 +74,22 @@ struct DesignBehaviorTests {
             PRAGMA user_version = 1;
             """)
         let id = UUID()
+        let concealedID = UUID()
+        let concealedCopiedAt = Date().timeIntervalSince1970
         try database.execute("INSERT INTO history_items VALUES ('\(id)', 'Legacy', 'text', NULL, NULL, 100, 'legacy', 'Kept');")
+        try database.execute("INSERT INTO history_items VALUES ('\(concealedID)', 'Legacy secret', 'concealed', NULL, NULL, \(concealedCopiedAt), 'legacy-secret', '');")
         try database.execute("INSERT INTO history_assets VALUES ('asset', '\(id)', 0, 'public.utf8-plain-text', 'blob', NULL, X'4B657074', 4);")
         let store = SQLiteHistoryStore(databaseURL: url)
         await store.loadRecentItems()
-        let item = try #require(store.items.first)
+        let item = try #require(store.items.first(where: { $0.id == id }))
         #expect(item.title == "Legacy")
         #expect(!item.isPinned)
         #expect(item.useCount == 0)
         #expect(try await store.resolve(item).assets.first?.data == Data("Kept".utf8))
         #expect(await store.togglePin(item) == .success)
+        let concealed = try #require(store.items.first(where: { $0.id == concealedID }))
+        #expect(concealed.expiresAt != nil)
+        #expect(abs((concealed.expiresAt?.timeIntervalSince1970 ?? 0) - concealedCopiedAt - 86400) < 0.001)
     }
 
     @Test func concealedContentIsMaskedAndExpires() async throws {
@@ -112,6 +118,31 @@ struct DesignBehaviorTests {
                 await #expect(throws: HistoryItemLoadError.self) { _ = try await store.resolve(expired.metadataOnly) }
                 monitor.stop()
             }
+        }
+    }
+
+    @Test(arguments: [false, true])
+    func concealedUseDoesNotExtendItsFixedExpiry(memoryOnly: Bool) async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("PasteLiteExpiry-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = SQLiteHistoryStore(databaseURL: memoryOnly ? directory : directory.appendingPathComponent("History.sqlite3"))
+        await store.loadRecentItems()
+        var original = sample("Fixed expiry", age: 120)
+        original.kind = .concealed
+        original.expiresAt = original.copiedAt.addingTimeInterval(86400)
+        let expiry = try #require(original.expiresAt)
+        #expect(await store.add(original) == .success)
+
+        await store.recordUse(original)
+        let used = try #require(store.items.first)
+        #expect(used.copiedAt > original.copiedAt)
+        #expect(abs((used.expiresAt?.timeIntervalSince1970 ?? 0) - expiry.timeIntervalSince1970) < 0.001)
+
+        if !memoryOnly {
+            let reloaded = SQLiteHistoryStore(databaseURL: directory.appendingPathComponent("History.sqlite3"))
+            await reloaded.loadRecentItems()
+            #expect(reloaded.items.first?.copiedAt == used.copiedAt)
+            #expect(abs((reloaded.items.first?.expiresAt?.timeIntervalSince1970 ?? 0) - expiry.timeIntervalSince1970) < 0.001)
         }
     }
 
@@ -168,6 +199,76 @@ struct DesignBehaviorTests {
                 #expect(store.items.first?.previewText == "Allowed content")
                 monitor.stop()
             }
+        }
+    }
+
+    @Test func clipboardChangeDuringSourceSwitchIsNotCaptured() async throws {
+        try await fixture { store, board, _ in
+            try await preferences { prefs in
+                prefs.excludedApps = ["com.example.private"]
+                var source = ("Private App", "com.example.private")
+                let monitor = ClipboardMonitor(historyStore: store, pasteboard: board, preferences: prefs,
+                    sourceApplication: { source })
+                source = ("Editor", "com.example.editor")
+                board.clearContents(); board.setString("Sensitive during app switch", forType: .string)
+                await monitor.checkForChanges()
+                #expect(store.items.isEmpty)
+
+                board.clearContents(); board.setString("Stable source", forType: .string)
+                await monitor.checkForChanges()
+                #expect(store.items.first?.previewText == "Stable source")
+                #expect(store.items.first?.sourceBundleIdentifier == "com.example.editor")
+                monitor.stop()
+            }
+        }
+    }
+
+    @Test func roundTripAppSwitchIsDetectedAndSkipped() async throws {
+        try await fixture { store, board, _ in
+            try await preferences { prefs in
+                prefs.excludedApps = ["com.example.private"]
+                var source = ("Editor", "com.example.editor")
+                let monitor = ClipboardMonitor(historyStore: store, pasteboard: board, preferences: prefs,
+                    sourceApplication: { source })
+                monitor.start()
+                defer { monitor.stop() }
+                // Simulate: Editor → Private (copy) → Editor before next poll.
+                // The workspace notification must fire even though bundle IDs match at poll time.
+                source = ("Private App", "com.example.private")
+                NSWorkspace.shared.notificationCenter.post(
+                    Notification(name: NSWorkspace.didActivateApplicationNotification))
+                board.clearContents()
+                #expect(board.setString("Private content during round trip", forType: .string))
+                source = ("Editor", "com.example.editor")
+                NSWorkspace.shared.notificationCenter.post(
+                    Notification(name: NSWorkspace.didActivateApplicationNotification))
+
+                // Poll immediately: the observer must already have marked the switch.
+                await monitor.checkForChanges()
+                #expect(store.items.isEmpty)
+
+                board.clearContents()
+                #expect(board.setString("Stable editor content", forType: .string))
+                await monitor.checkForChanges()
+                #expect(store.items.first?.previewText == "Stable editor content")
+            }
+        }
+    }
+
+    @Test func allAccentForegroundsMeetSmallTextContrast() throws {
+        func luminance(_ color: NSColor) -> Double {
+            func linear(_ channel: Double) -> Double {
+                channel <= 0.04045 ? channel / 12.92 : pow((channel + 0.055) / 1.055, 2.4)
+            }
+            return 0.2126 * linear(color.redComponent) +
+                0.7152 * linear(color.greenComponent) + 0.0722 * linear(color.blueComponent)
+        }
+        for accent in PL.Accent.allCases {
+            let background = try #require(NSColor(accent.color).usingColorSpace(.sRGB))
+            let foreground = try #require(NSColor(accent.foregroundColor).usingColorSpace(.sRGB))
+            let levels = [luminance(background), luminance(foreground)].sorted()
+            let contrast = (levels[1] + 0.05) / (levels[0] + 0.05)
+            #expect(contrast >= 4.5, "\(accent.rawValue) has contrast \(contrast):1")
         }
     }
 

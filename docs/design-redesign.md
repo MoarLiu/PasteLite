@@ -16,7 +16,7 @@ The implementation uses the recommended A / Stack identity and retains macOS 12 
 | Concealed content | Masked title/preview, explicit reveal, configurable skip policy, 24-hour expiry. Transient and generated content remain excluded. |
 | Actions | Copy, primary paste/copy, pin/unpin, safe link opening, delete with 5-second undo, clear confirmation preserving pins. |
 | Paste | Return invokes the configured primary action; Option-Return reverses the plain text preference; missing permission falls back to copy. Paste/copy HUD lasts 1.7 seconds. |
-| Keyboard | Arrows, Command-Up/Down, Command-C/K/Backspace/Z, Shift-Command-P, Command-1…9, Tab/Shift-Tab and layered Escape; marked text and modal sheets keep their input behavior. |
+| Keyboard | Arrows, Command-Up/Down, Command-C/K/Backspace/Z, Shift-Command-P, Command-1…9, standard Tab/Shift-Tab focus navigation and layered Escape; text selections, focused controls, marked text and modal sheets keep their native input behavior. |
 | Menu bar | Recording toggle and paused icon, item count, five most recent items, history/settings/update entry points, quit. |
 | General settings | Recorder with inline reset/disable, registration feedback and input-source conflict hint; position, preview, paste behavior, theme and eight accent colors. |
 | Storage settings | Type breakdown, physical database/WAL/SHM size, adjustable limit, Finder reveal and clear history. Pinned items do not count against the rolling unpinned limit. |

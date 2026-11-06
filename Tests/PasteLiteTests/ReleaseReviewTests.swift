@@ -1,4 +1,5 @@
 import AppKit
+import LinkPresentation
 import CryptoKit
 import Testing
 @testable import PasteLite
@@ -168,12 +169,47 @@ struct ReleaseReviewTests {
     }
 
     @Test func revealingContentStopsAtItsExpiry() async throws {
-        let model = ConcealedRevealModel()
+        let clock = ExpiryClock()
+        let model = ConcealedRevealModel(waitUntilExpiry: { seconds in
+            await clock.wait(seconds: seconds)
+        })
         model.show(secret("Expiring sample", age: 86398)) { $0 }
         await model.loadTask?.value
         #expect(model.text == "Expiring sample")
-        try await Task.sleep(nanoseconds: 2_100_000_000)
+
+        let seconds = await clock.startedSeconds()
+        #expect(seconds > 0 && seconds <= 2)
+        await clock.advance()
+        await model.expiryTask?.value
         #expect(model.text == nil)
+    }
+
+    @Test func websiteMetadataSnapshotDoesNotShareMutableProviderState() async throws {
+        let original = LPLinkMetadata()
+        let imageData = Data("Preview image representation".utf8)
+        original.originalURL = URL(string: "https://example.com/original")
+        original.url = URL(string: "https://example.com/final")
+        original.title = "Preview fixture"
+        original.imageProvider = NSItemProvider(item: imageData as NSData,
+            typeIdentifier: NSPasteboard.PasteboardType.png.rawValue)
+        let snapshot = try #require(WebsiteMetadataSnapshot(original))
+        original.title = "Changed after capture"
+
+        let decoded = try #require(snapshot.take())
+        #expect(decoded !== original)
+        #expect(decoded.originalURL == original.originalURL)
+        #expect(decoded.url == original.url)
+        #expect(decoded.title == "Preview fixture")
+        #expect(snapshot.take() == nil)
+        #expect(WebsiteMetadataSnapshot(nil) == nil)
+        let imageProvider = try #require(decoded.imageProvider)
+        let restoredImage: Data = try await withCheckedThrowingContinuation { continuation in
+            imageProvider.loadDataRepresentation(forTypeIdentifier: NSPasteboard.PasteboardType.png.rawValue) { data, error in
+                if let data { continuation.resume(returning: data) }
+                else { continuation.resume(throwing: error ?? CocoaError(.fileReadUnknown)) }
+            }
+        }
+        #expect(restoredImage == imageData)
     }
 
     @Test func websiteMetadataRequiresOptInAndRejectsURLCredentials() {
@@ -214,6 +250,31 @@ struct ReleaseReviewTests {
     }
 }
 
+private actor ExpiryClock {
+    private var seconds: TimeInterval?
+    private var expiry: CheckedContinuation<Void, Never>?
+    private var started: CheckedContinuation<TimeInterval, Never>?
+
+    func wait(seconds: TimeInterval) async {
+        await withCheckedContinuation { continuation in
+            self.seconds = seconds
+            expiry = continuation
+            started?.resume(returning: seconds)
+            started = nil
+        }
+    }
+
+    func startedSeconds() async -> TimeInterval {
+        if let seconds { return seconds }
+        return await withCheckedContinuation { started = $0 }
+    }
+
+    func advance() {
+        expiry?.resume()
+        expiry = nil
+    }
+}
+
 private actor RevealGate {
     let item: ClipboardItem
     var continuation: CheckedContinuation<ClipboardItem, Never>?
@@ -233,11 +294,13 @@ private actor RevealGate {
 }
 
 private func sample(_ text: String, age: TimeInterval = 0) -> ClipboardItem {
-    ClipboardItem(title: text, kind: .text, copiedAt: Date().addingTimeInterval(-age), contentHash: text,
+    ClipboardItem(title: text, kind: .text, copiedAt: Date().addingTimeInterval(-age),
+                  expiresAt: Date().addingTimeInterval(86400 - age), contentHash: text,
                   previewText: text, assets: [.init(index: 0, pasteboardType: .string, data: Data(text.utf8))])
 }
 private func secret(_ text: String, age: TimeInterval = 0) -> ClipboardItem {
     var item = sample(text, age: age)
     item.kind = .concealed; item.title = "Concealed content"; item.previewText = ""
+    item.expiresAt = item.copiedAt.addingTimeInterval(86400)
     return item
 }

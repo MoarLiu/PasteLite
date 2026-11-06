@@ -234,6 +234,58 @@ struct ReviewFixTests {
             #expect(!panel.isVisible)
         }
     }
+
+    @Test(arguments: [false, true])
+    func filteredSelectionSurvivesCaptureAndDeletion(withSearch: Bool) async throws {
+        try await withReviewFixture { store, board, _ in
+            _ = NSApplication.shared
+            for index in 0..<4 {
+                var entry = reviewItem("Match \(index)")
+                entry.copiedAt = Date().addingTimeInterval(Double(-index - 10))
+                #expect(await store.add(entry) == .success)
+            }
+            let state = AppState()
+            if withSearch { state.searchText = "Match" }
+            else { state.selectedFilter = .text }
+            let controller = HistoryPanelController(appState: state, historyStore: store,
+                pasteService: PasteService(historyStore: store, pasteboard: board))
+            defer { controller.close() }
+            let panel = try #require(controller.window)
+            panel.setFrameOrigin(NSPoint(x: -20_000, y: -20_000))
+            panel.orderFrontRegardless()
+            panel.contentView?.layoutSubtreeIfNeeded()
+            try await eventually("initial filtered selection") { state.selectedItemID != nil }
+
+            let chosenID = store.items[2].id
+            state.selectedItemID = chosenID
+            try await Task.sleep(nanoseconds: 100_000_000)
+            #expect(await store.add(reviewItem("Match newest")) == .success)
+            try await Task.sleep(nanoseconds: 150_000_000)
+            #expect(state.selectedItemID == chosenID)
+
+            let filtered = state.filteredItems(in: store.items)
+            let index = try #require(filtered.firstIndex(where: { $0.id == chosenID }))
+            let adjacent = filtered[index + 1].id
+            #expect(await store.remove(id: chosenID) == .success)
+            try await eventually("adjacent selection after filtered deletion") {
+                state.selectedItemID == adjacent
+            }
+
+            // A change of criteria still intentionally resets the selection.
+            if withSearch { state.searchText = "" }
+            else { state.selectedFilter = .all }
+            try await eventually("selection reset after criteria change") {
+                state.selectedItemID == state.filteredItems(in: store.items).first?.id
+            }
+
+            state.moveSelection(delta: 2, in: state.filteredItems(in: store.items))
+            #expect(state.selectedItemID != store.items.first?.id)
+            state.prepareForPresentation()
+            try await eventually("selection reset on a fresh presentation") {
+                state.selectedItemID == store.items.first?.id
+            }
+        }
+    }
 }
 
 private actor CaptureGate {
