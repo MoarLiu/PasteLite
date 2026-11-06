@@ -1,9 +1,9 @@
-# PasteLite 0.4.1 候选验收
+# PasteLite 0.4.1 发布验收
 
 日期：2026-11-07（Asia/Shanghai）。基线：v0.4.0 / `08e90eb`。
-分支：`codex/0.4.1-completion`。目标：0.4.1 / build 41，macOS 12+，仅 arm64。
+开发分支：`codex/0.4.1-completion`；发布分支：`codex/release-0.4.1`。版本：0.4.1 / build 41，macOS 12+，仅 arm64。发布提交：`83a1582`。
 
-当前状态：发布 review 问题已修复，最终本地自动回归和 ARM 包验证完成；按用户指令在最终 ARM CI 通过后发布。真实 UI/输入法/VoiceOver 与 macOS 12 的覆盖限制保留，不以行为测试冒充。
+当前状态：发布 review 问题已修复，本地与远端 ARM 自动验收通过，已按用户指令正式发布 [v0.4.1](https://github.com/MoarLiu/PasteLite/releases/tag/v0.4.1)。真实 UI/输入法/VoiceOver 与 macOS 12 的覆盖限制保留，不以行为测试冒充。
 
 ## 已实现
 
@@ -56,7 +56,7 @@
 
 另从真实 v0.4.0 源码快照编译旧 repository，读取最终 0.4.1 建立的扩展库：持久化可用、三条历史与片段完整载荷读取通过，未回退到内存模式。该复验仅使用隔离数据。
 
-CI 已切换为 ARM runner 和单架构产物；发布以最终提交的 ARM workflow 成功为前提，远端结果保存在本地发布验证记录。
+最终提交的 [ARM CI 42272292398](https://github.com/MoarLiu/PasteLite/actions/runs/42272292398) 全部成功，包含 Debug、Release、重复退出、ARM 打包、镜像签名和更新安装/回滚。发布制品仅有 arm64 DMG、app ZIP 及两份 SHA-256 文件；远端结果保存在本地发布验证记录。
 
 ## 实机限制
 
