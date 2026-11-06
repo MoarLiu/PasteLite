@@ -9,6 +9,7 @@ struct LibrarySyncEvent: Codable, Sendable {
     var changedGroups: [UUID]
     var deletedGroups: [UUID]
     var deletedItems: [UUID]
+    var deletedSnapshotHashes: [String]? = nil
 }
 
 extension HistoryRepository {
@@ -70,7 +71,8 @@ extension HistoryRepository {
             return .init(value)
         }
         let archive = LibraryArchive(groups: libraryGroups.map { .init(id: $0.id, name: $0.name, createdAt: $0.createdAt) }, items: loaded)
-        let event = LibrarySyncEvent(stamp: stamp, archive: archive, changedGroups: changedGroups.map(\.id), deletedGroups: deletedGroups, deletedItems: deleted)
+        let deletedHashes = previousItems.filter { deleted.contains($0.id) && $0.type == .snapshot }.map { $0.content.contentHash }
+        let event = LibrarySyncEvent(stamp: stamp, archive: archive, changedGroups: changedGroups.map(\.id), deletedGroups: deletedGroups, deletedItems: deleted, deletedSnapshotHashes: deletedHashes)
         let data = try JSONEncoder().encode(event)
         guard data.count <= LibraryArchive.maximumBytes else { throw LibraryError.invalid("This sync change exceeds 256 MiB.") }
         let insert = try database.prepare("INSERT INTO sync_outbox VALUES (?, ?);")
@@ -108,7 +110,9 @@ extension HistoryRepository {
               event.stamp.count == 57, let clock = UInt64(event.stamp.prefix(20)), clock <= 253402300799999999,
               event.stamp.dropFirst(20).first == "-",
               UUID(uuidString: String(event.stamp.suffix(36))) != nil,
-              event.deletedItems.count <= 10000, event.deletedGroups.count <= 1000 else { throw LibraryError.invalid("Invalid sync change.") }
+              event.deletedItems.count <= 10000, event.deletedGroups.count <= 1000,
+              (event.deletedSnapshotHashes?.count ?? 0) <= 10000,
+              (event.deletedSnapshotHashes ?? []).allSatisfy({ !$0.isEmpty && $0.utf8.count <= 1024 }) else { throw LibraryError.invalid("Invalid sync change.") }
         let incoming = try event.archive.validatedItems()
         let database = try libraryDatabase()
         guard try !hasReceivedSync(event.id) else { return snapshot() }
@@ -166,6 +170,15 @@ extension HistoryRepository {
                 try insertLibrary(item, database: database)
                 try setSyncVersion("item", id: item.id, stamp: event.stamp, database: database)
                 try refreshLibrary(database)
+            }
+            for hash in event.deletedSnapshotHashes ?? [] {
+                try recordSnapshotDeletion(hash, stamp: event.stamp, database: database)
+                for item in libraryItems where item.type == .snapshot && item.content.contentHash == hash {
+                    guard try acceptsSync("item", id: item.id, stamp: event.stamp, database: database) else { continue }
+                    let remove = try database.prepare("DELETE FROM library_items WHERE id = ?;")
+                    try remove.bind(item.id.uuidString, at: 1); try remove.run()
+                    try setSyncVersion("item", id: item.id, stamp: event.stamp, database: database)
+                }
             }
             for id in event.deletedItems {
                 guard try acceptsSync("item", id: id, stamp: event.stamp, database: database) else { continue }

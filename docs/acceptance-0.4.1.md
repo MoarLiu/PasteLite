@@ -24,7 +24,7 @@
 
 本轮发布 review 修复与回归见 [review 记录](review-0.4.1.md)，覆盖粘贴来源修订、合并剪贴板版本、脚本子进程取消、同步换目录、分组重名/删除重放及模板大小预检。
 
-最终完整检查：**Debug 166 个测试/13 套件、Release 165 个测试/12 套件全部通过**，启用 `-strict-concurrency=complete` 和 `-warnings-as-errors`。
+最终完整检查：**Debug 167 个测试/13 套件、Release 166 个测试/12 套件全部通过**，启用 `-strict-concurrency=complete` 和 `-warnings-as-errors`。
 
 覆盖备份格式回读、重复导入、本地编辑保护、事务失败回滚、机密/格式验证、OCR 真图识别与清空竞态、来源组合、多选顺序、合并边界、队列成功/失败/换目标、模板中文/重复/缺失/超限、脚本输出/失败/取消、真实 loopback HTTP MCP 鉴权及机密排除、同步编辑/删除/幂等/清空截止/事务回滚。
 
@@ -50,8 +50,8 @@
 正式候选仅生成 arm64 DMG、app ZIP 及校验和，目录 `dist/0.4.1-release/release/`。最终 ARM 包已只读挂载、复制并隔离启动，通过版本/build、架构、最低系统版本、签名、开发数据与归档检查。实际候选包更新暂存、安装成功/失败回滚共 5 个测试通过。隔离 Debug 应用重复退出清空历史、收藏、分组、附件、OCR 与同步元数据通过。先前 Intel 临时候选已从当前发布目录移除。签名：ad-hoc，未 notarize。
 
 ```text
-8e7a1217b4a17ffd729914f1d91f6ab5fca84ee0e160c48d705e9371abfcca65  PasteLite-0.4.1-macos-arm64.dmg
-519ef06a07cd06a0426637c7ceb037b64bcddf8cd38fd1c6c33f1b27e8d234fc  PasteLite-0.4.1-macos-arm64.app.zip
+0acb9feb55fc775a7b503ddd72664dd067a17e691881501bd7d1512490a45af4  PasteLite-0.4.1-macos-arm64.dmg
+4db76eba618e547c2302712bdd990646264e6b9abeb7bc3c3798dd52c0441e62  PasteLite-0.4.1-macos-arm64.app.zip
 ```
 
 另从真实 v0.4.0 源码快照编译旧 repository，读取最终 0.4.1 建立的扩展库：持久化可用、三条历史与片段完整载荷读取通过，未回退到内存模式。该复验仅使用隔离数据。

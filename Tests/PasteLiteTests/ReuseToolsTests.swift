@@ -226,4 +226,20 @@ struct ReuseToolsTests {
         #expect(result.libraryItems.first?.groupID == nil)
         #expect(result.libraryItems.first?.content.previewText == "Edited offline")
     }
+
+    @Test func snapshotDeletionArrivingBeforeOriginalSaveDeletesOfflineAlias() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let a = HistoryRepository(databaseURL: directory.appendingPathComponent("a.sqlite3"), limit: 500)
+        let b = HistoryRepository(databaseURL: directory.appendingPathComponent("b.sqlite3"), limit: 500)
+        _ = try await a.configureFolderSync(enabled: true)
+        _ = try await b.configureFolderSync(enabled: true)
+        let source = librarySample("Same content on two offline Macs")
+        let aItem = try #require(await a.saveLibrary(snapshotDraft(source, name: "A", generation: 0)).snapshot.libraryItems.first)
+        _ = await b.saveLibrary(snapshotDraft(source, name: "B", generation: 0))
+        _ = await a.removeLibraryItem(id: aItem.id)
+        let events = try await a.syncOutbox().map { try JSONDecoder().decode(LibrarySyncEvent.self, from: $0.data) }.sorted { $0.stamp > $1.stamp }
+        for event in events { _ = try await b.applySyncEvent(event, generation: 0) }
+        #expect(await b.loadLibrary().libraryItems.isEmpty)
+    }
 }
