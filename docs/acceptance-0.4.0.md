@@ -24,6 +24,8 @@
 
 收藏载荷和缩略图通过 `ClipboardOrigin` 识别来源，片段编辑带修订号校验。搜索结果在后台计算，界面和键盘操作使用同一份结果；旧请求不能覆盖新查询。
 
+首次发布流水线发现 runner 工具链不接受事务回调捕获 SQLite 连接。本轮将收藏写入改为值类型操作，由 repository actor 直接执行 SQL、提交和回滚；没有把数据库连接标记为可跨线程共享。
+
 ## 自动验证
 
 | 检查 | 结果 |
@@ -66,16 +68,16 @@
 
 ## 候选包
 
-候选包输出在本地 `dist/0.4.0-candidate/release/`，包含 arm64 和 x86_64 的 `.dmg`、`.app.zip` 与 SHA-256 文件。两种 Release 构建、架构检查、签名、plist、最低系统版本及镜像内部校验通过。
+正式发布包输出在本地 `dist/0.4.0-release/release/`，包含 arm64 和 x86_64 的 `.dmg`、`.app.zip` 与 SHA-256 文件。两种 Release 构建、架构检查、签名、plist、最低系统版本及镜像内部校验通过。
 
 签名方式延续现有项目：ad-hoc，未 notarize。候选包没有新增依赖。
 
 ```text
-3e8bb615bead59f5fd678d20c96ab4d72680912f400170e9f020dd1e22e89241  PasteLite-0.4.0-macos-arm64.dmg
-7ade669a552b1bf221fef3ac1600930788330bdcb80a9ea9ad1cdf90c3efbeb9  PasteLite-0.4.0-macos-x86_64.dmg
+be8fc10e848a4d0aafaca50d28975a291d9160603c51ee32aac1ceb6f15d9a36  PasteLite-0.4.0-macos-arm64.dmg
+9187fcd90f41b7ebee303ea894a45a562968d6b3b959509646e71a04aa56409a  PasteLite-0.4.0-macos-x86_64.dmg
 ```
 
-候选包挂载后的隔离启动结果记录在本地 `outputs/0.4.0-review/candidate-verification.json`，不随源码分发。该验证与手动交互验收分开记录。
+安装包挂载后的隔离启动结果记录在本地 `outputs/0.4.0-release/verification.json`，不随源码分发。该验证与手动交互验收分开记录。
 
 两张 DMG 均已只读挂载，复制出的应用通过版本、架构、签名、归档内容和开发数据检查。arm64 原生运行、x86_64 经 Rosetta 运行均完成启动，创建 schema v4 的独立空数据库。验证等待迁移完成后再检查库版本，避免把数据库文件刚创建、事务尚未提交的阶段误判为启动失败。
 
@@ -106,14 +108,14 @@ SWIFT_TEST_SCRATCH_PATH="$verification_dir/build" \
 ./script/run_checks.sh --no-parallel \
   -Xswiftc -strict-concurrency=complete -Xswiftc -warnings-as-errors
 
-DIST_DIR="$PWD/dist/0.4.0-candidate" \
+DIST_DIR="$PWD/dist/0.4.0-release" \
 SWIFT_BUILD_SYSTEM=native \
 ./script/package_release.sh
 
-python3 script/verify_candidate.py dist/0.4.0-candidate/release \
-  --output outputs/0.4.0-review/candidate-verification.json
+python3 script/verify_candidate.py dist/0.4.0-release/release \
+  --output outputs/0.4.0-release/verification.json
 
-PASTELITE_UPDATE_TEST_APP="$PWD/dist/0.4.0-candidate/release/stage-arm64/PasteLite.app" \
+PASTELITE_UPDATE_TEST_APP="$PWD/dist/0.4.0-release/release/stage-arm64/PasteLite.app" \
 ./script/run_checks.sh --no-parallel --filter UpdateInstallationTests
 
 python3 script/review_runtime.py dist/0.4.0-preview/PasteLite.app

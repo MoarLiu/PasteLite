@@ -7,6 +7,18 @@ struct LibraryMutation: Sendable {
     var snapshot: HistorySnapshot
 }
 
+private enum LibraryWrite {
+    case insert(LibraryItem)
+    case replace(LibraryItem)
+    case createGroup(UUID, String)
+    case renameGroup(UUID, String)
+    case deleteGroup(UUID)
+    case move(UUID, UUID?)
+    case remove(UUID)
+    case recordUse(UUID)
+    case clear
+}
+
 extension HistoryRepository {
     func loadLibrary() -> HistorySnapshot {
         openIfNeeded()
@@ -130,7 +142,7 @@ extension HistoryRepository {
     func saveLibrary(_ draft: LibraryDraft) -> LibraryMutation {
         libraryMutation {
             guard draft.generation >= libraryGeneration else { throw LibraryError.cleared }
-            let database = try libraryDatabase()
+            _ = try libraryDatabase()
             let name = try LibraryValidation.name(draft.name)
             try validateGroup(draft.groupID)
             if let id = draft.editingID {
@@ -152,10 +164,7 @@ extension HistoryRepository {
                     updated.content.assets = loaded.assets
                     updated.content.hasLoadedAssets = true
                 }
-                try libraryTransaction(database) {
-                    try deleteLibraryRow(id, database: database)
-                    try insertLibrary(updated, database: database)
-                }
+                try libraryTransaction(.replace(updated))
                 return id
             }
             let id = UUID()
@@ -182,7 +191,7 @@ extension HistoryRepository {
             let entry = LibraryItem(id: id, groupID: draft.groupID, name: name, type: draft.type, content: content,
                                     sourceHistoryID: draft.source?.origin == .history ? draft.source?.id : nil,
                                     sourceContentHash: draft.source?.contentHash, savedAt: now, updatedAt: now, lastUsedAt: nil, revision: 1)
-            try libraryTransaction(database) { try insertLibrary(entry, database: database) }
+            try libraryTransaction(.insert(entry))
             return id
         }
     }
@@ -190,42 +199,26 @@ extension HistoryRepository {
     func createLibraryGroup(name: String, id: UUID = UUID(), generation: Int) -> LibraryMutation {
         libraryMutation {
             guard generation >= libraryGeneration else { throw LibraryError.cleared }
-            let database = try libraryDatabase()
+            _ = try libraryDatabase()
             let valid = try LibraryValidation.groupName(name, existing: libraryGroups)
-            let now = Date().timeIntervalSince1970
-            try libraryTransaction(database) {
-                let query = try database.prepare("INSERT INTO library_groups (id, name, name_key, created_at, updated_at) VALUES (?, ?, ?, ?, ?);")
-                try query.bind(id.uuidString, at: 1); try query.bind(valid, at: 2)
-                try query.bind(valid.lowercased(), at: 3); try query.bind(now, at: 4); try query.bind(now, at: 5)
-                try query.run()
-            }
+            try libraryTransaction(.createGroup(id, valid))
             return id
         }
     }
 
     func renameLibraryGroup(id: UUID, name: String) -> LibraryMutation {
         libraryMutation {
-            let database = try libraryDatabase()
+            _ = try libraryDatabase()
             guard libraryGroups.contains(where: { $0.id == id }) else { throw LibraryError.changed }
             let valid = try LibraryValidation.groupName(name, existing: libraryGroups, excluding: id)
-            try libraryTransaction(database) {
-                let query = try database.prepare("UPDATE library_groups SET name = ?, name_key = ?, updated_at = ? WHERE id = ?;")
-                try query.bind(valid, at: 1); try query.bind(valid.lowercased(), at: 2)
-                try query.bind(Date().timeIntervalSince1970, at: 3); try query.bind(id.uuidString, at: 4); try query.run()
-            }
+            try libraryTransaction(.renameGroup(id, valid))
             return id
         }
     }
 
     func deleteLibraryGroup(id: UUID) -> LibraryMutation {
         libraryMutation {
-            let database = try libraryDatabase()
-            try libraryTransaction(database) {
-                let items = try database.prepare("UPDATE library_items SET group_id = NULL, revision = revision + 1 WHERE group_id = ?;")
-                try items.bind(id.uuidString, at: 1); try items.run()
-                let query = try database.prepare("DELETE FROM library_groups WHERE id = ?;")
-                try query.bind(id.uuidString, at: 1); try query.run()
-            }
+            try libraryTransaction(.deleteGroup(id))
             return nil
         }
     }
@@ -233,22 +226,17 @@ extension HistoryRepository {
     func moveLibraryItem(id: UUID, groupID: UUID?, generation: Int) -> LibraryMutation {
         libraryMutation {
             guard generation >= libraryGeneration else { throw LibraryError.cleared }
-            let database = try libraryDatabase()
+            _ = try libraryDatabase()
             try validateGroup(groupID)
             guard libraryItems.contains(where: { $0.id == id }) else { throw HistoryItemLoadError.unavailable }
-            try libraryTransaction(database) {
-                let query = try database.prepare("UPDATE library_items SET group_id = ?, updated_at = ?, revision = revision + 1 WHERE id = ?;")
-                try query.bind(groupID?.uuidString, at: 1); try query.bind(Date().timeIntervalSince1970, at: 2)
-                try query.bind(id.uuidString, at: 3); try query.run()
-            }
+            try libraryTransaction(.move(id, groupID))
             return id
         }
     }
 
     func removeLibraryItem(id: UUID) -> LibraryMutation {
         libraryMutation {
-            let database = try libraryDatabase()
-            try libraryTransaction(database) { try deleteLibraryRow(id, database: database) }
+            try libraryTransaction(.remove(id))
             return nil
         }
     }
@@ -256,23 +244,19 @@ extension HistoryRepository {
     func restoreLibrary(_ item: LibraryItem, generation: Int) -> LibraryMutation {
         libraryMutation {
             guard generation >= libraryGeneration else { throw LibraryError.cleared }
-            let database = try libraryDatabase()
+            _ = try libraryDatabase()
             if libraryItems.contains(where: { $0.id == item.id || item.type == .snapshot && $0.type == .snapshot && $0.sourceContentHash == item.sourceContentHash }) { return nil }
             var restored = item
             if let group = restored.groupID, !libraryGroups.contains(where: { $0.id == group }) { restored.groupID = nil }
             try LibraryValidation.snapshot(restored.content)
-            try libraryTransaction(database) { try insertLibrary(restored, database: database) }
+            try libraryTransaction(.insert(restored))
             return restored.id
         }
     }
 
     func recordLibraryUse(id: UUID) -> LibraryMutation {
         libraryMutation {
-            let database = try libraryDatabase()
-            try libraryTransaction(database) {
-                let query = try database.prepare("UPDATE library_items SET last_used_at = ?, use_count = use_count + 1 WHERE id = ?;")
-                try query.bind(Date().timeIntervalSince1970, at: 1); try query.bind(id.uuidString, at: 2); try query.run()
-            }
+            try libraryTransaction(.recordUse(id))
             return id
         }
     }
@@ -280,8 +264,7 @@ extension HistoryRepository {
     func clearLibrary(generation: Int) -> LibraryMutation {
         libraryGeneration = max(libraryGeneration, generation)
         return libraryMutation {
-            let database = try libraryDatabase()
-            try libraryTransaction(database) { try database.execute("DELETE FROM library_items; DELETE FROM library_groups;") }
+            try libraryTransaction(.clear)
             return nil
         }
     }
@@ -345,20 +328,64 @@ extension HistoryRepository {
         }
     }
 
-    private func libraryTransaction(_ database: SQLiteDatabase, _ body: () throws -> Void) throws {
+    private func libraryTransaction(_ operation: LibraryWrite) throws {
+        let database = try libraryDatabase()
+        let previousItems = libraryItems, previousGroups = libraryGroups
         try database.execute("BEGIN IMMEDIATE TRANSACTION;")
         do {
-            try body()
-            // Read the new state before commit so a failed refresh also rolls back.
-            let previousItems = libraryItems, previousGroups = libraryGroups
-            do {
-                try refreshLibrary(database)
-                try database.execute("COMMIT;")
-            } catch {
-                libraryItems = previousItems; libraryGroups = previousGroups
-                throw error
+            // Keep all connection access directly on this actor. In particular,
+            // do not pass a closure capturing the connection through a helper.
+            switch operation {
+            case let .insert(item):
+                try insertLibrary(item, database: database)
+            case let .replace(item):
+                try deleteLibraryRow(item.id, database: database)
+                try insertLibrary(item, database: database)
+            case let .createGroup(id, name):
+                let query = try database.prepare("INSERT INTO library_groups (id, name, name_key, created_at, updated_at) VALUES (?, ?, ?, ?, ?);")
+                let now = Date().timeIntervalSince1970
+                try query.bind(id.uuidString, at: 1)
+                try query.bind(name, at: 2)
+                try query.bind(name.lowercased(), at: 3)
+                try query.bind(now, at: 4)
+                try query.bind(now, at: 5)
+                try query.run()
+            case let .renameGroup(id, name):
+                let query = try database.prepare("UPDATE library_groups SET name = ?, name_key = ?, updated_at = ? WHERE id = ?;")
+                try query.bind(name, at: 1)
+                try query.bind(name.lowercased(), at: 2)
+                try query.bind(Date().timeIntervalSince1970, at: 3)
+                try query.bind(id.uuidString, at: 4)
+                try query.run()
+            case let .deleteGroup(id):
+                let items = try database.prepare("UPDATE library_items SET group_id = NULL, revision = revision + 1 WHERE group_id = ?;")
+                try items.bind(id.uuidString, at: 1)
+                try items.run()
+                let query = try database.prepare("DELETE FROM library_groups WHERE id = ?;")
+                try query.bind(id.uuidString, at: 1)
+                try query.run()
+            case let .move(id, groupID):
+                let query = try database.prepare("UPDATE library_items SET group_id = ?, updated_at = ?, revision = revision + 1 WHERE id = ?;")
+                try query.bind(groupID?.uuidString, at: 1)
+                try query.bind(Date().timeIntervalSince1970, at: 2)
+                try query.bind(id.uuidString, at: 3)
+                try query.run()
+            case let .remove(id):
+                try deleteLibraryRow(id, database: database)
+            case let .recordUse(id):
+                let query = try database.prepare("UPDATE library_items SET last_used_at = ?, use_count = use_count + 1 WHERE id = ?;")
+                try query.bind(Date().timeIntervalSince1970, at: 1)
+                try query.bind(id.uuidString, at: 2)
+                try query.run()
+            case .clear:
+                try database.execute("DELETE FROM library_items; DELETE FROM library_groups;")
             }
+            // Read the new state before commit so a failed refresh also rolls back.
+            try refreshLibrary(database)
+            try database.execute("COMMIT;")
         } catch {
+            libraryItems = previousItems
+            libraryGroups = previousGroups
             try? database.execute("ROLLBACK;")
             throw error
         }
