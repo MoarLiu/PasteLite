@@ -50,7 +50,7 @@ actor HistoryRepository {
                 url: databaseURL,
                 privateDirectory: databaseURL == PasteLiteDatabasePaths.historyDatabaseURL
             )
-            try Self.migrate(database)
+            try migrate(database)
             self.database = database
         } catch {
             storageWarning = "History is stored in memory only and will be lost when PasteLite quits. Older items may be removed when memory is full."
@@ -94,7 +94,7 @@ actor HistoryRepository {
         if let database {
             do {
                 var updatedItems: [ClipboardItem] = []
-                try database.transaction {
+                try withTransaction(database: database) {
                     try expireSensitive(database: database)
                     let existing = try database.prepare("SELECT is_pinned, use_count FROM history_items WHERE content_hash = ?;")
                     try existing.bind(item.contentHash, at: 1)
@@ -198,7 +198,7 @@ actor HistoryRepository {
         if let database {
             do {
                 var updated: [ClipboardItem] = []
-                try database.transaction {
+                try withTransaction(database: database) {
                     let statement = try database.prepare("UPDATE history_items SET is_pinned = ? WHERE id = ?;")
                     try statement.bind(Int64(pinned ? 1 : 0), at: 1)
                     try statement.bind(id.uuidString, at: 2)
@@ -222,7 +222,7 @@ actor HistoryRepository {
         if let database {
             do {
                 var updatedItems: [ClipboardItem] = []
-                try database.transaction {
+                try withTransaction(database: database) {
                     let statement = try database.prepare("UPDATE history_items SET copied_at = ?, use_count = use_count + 1 WHERE id = ?;")
                     try statement.bind(copiedAt.timeIntervalSince1970, at: 1)
                     try statement.bind(id.uuidString, at: 2)
@@ -321,7 +321,20 @@ actor HistoryRepository {
         return HistoryMutation(result: .failure(message), snapshot: snapshot())
     }
 
-    private static func migrate(_ database: SQLiteDatabase) throws {
+    // Keep transaction orchestration and callbacks on this actor. The low-level
+    // connection never receives a closure capturing actor-owned state.
+    private func withTransaction(database: SQLiteDatabase, _ body: () throws -> Void) throws {
+        try database.execute("BEGIN IMMEDIATE TRANSACTION;")
+        do {
+            try body()
+            try database.execute("COMMIT;")
+        } catch {
+            try? database.execute("ROLLBACK;")
+            throw error
+        }
+    }
+
+    private func migrate(_ database: SQLiteDatabase) throws {
         try database.execute(
             """
             CREATE TABLE IF NOT EXISTS history_items (
@@ -359,7 +372,7 @@ actor HistoryRepository {
         let columns = try database.prepare("PRAGMA table_info(history_items);")
         var names = Set<String>()
         while try columns.step() { if let name = columns.columnString(at: 1) { names.insert(name) } }
-        try database.transaction {
+        try withTransaction(database: database) {
             if !names.contains("is_pinned") { try database.execute("ALTER TABLE history_items ADD COLUMN is_pinned INTEGER NOT NULL DEFAULT 0;") }
             if !names.contains("use_count") { try database.execute("ALTER TABLE history_items ADD COLUMN use_count INTEGER NOT NULL DEFAULT 0;") }
             if !names.contains("expires_at") { try database.execute("ALTER TABLE history_items ADD COLUMN expires_at REAL;") }

@@ -110,29 +110,6 @@ final class SQLiteDatabase {
         return SQLiteStatement(statement: statement, database: self)
     }
 
-    #if compiler(>=6.0)
-    // Keep an actor-owned connection and its transaction closure in the same
-    // isolation domain, including on Swift 6.1's stricter capture analysis.
-    func transaction(isolation: isolated (any Actor)? = #isolation, _ body: () throws -> Void) throws {
-        try performTransaction(body)
-    }
-    #else
-    func transaction(_ body: () throws -> Void) throws {
-        try performTransaction(body)
-    }
-    #endif
-
-    private func performTransaction(_ body: () throws -> Void) throws {
-        try execute("BEGIN IMMEDIATE TRANSACTION;")
-        do {
-            try body()
-            try execute("COMMIT;")
-        } catch {
-            try? execute("ROLLBACK;")
-            throw error
-        }
-    }
-
     fileprivate var lastErrorMessage: String {
         guard let handle else { return "database is closed" }
         return String(cString: sqlite3_errmsg(handle))
