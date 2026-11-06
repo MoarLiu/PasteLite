@@ -23,10 +23,12 @@ protocol HistoryStore: AnyObject, ObservableObject {
     @discardableResult func remove(id: ClipboardItem.ID) async -> HistoryStoreMutationResult
     @discardableResult func clear() async -> HistoryStoreMutationResult
     func resolve(_ item: ClipboardItem) async throws -> ClipboardItem
+    func isCurrent(_ item: ClipboardItem) -> Bool
 }
 
 @MainActor
 extension HistoryStore {
+    func isCurrent(_ item: ClipboardItem) -> Bool { true }
     var captureGeneration: Int { 0 }
     var actionGeneration: Int { captureGeneration }
 
@@ -56,6 +58,9 @@ final class SQLiteHistoryStore: HistoryStore {
     @Published private(set) var isLibraryAvailable = false
     @Published private(set) var libraryErrorMessage: String?
     @Published private(set) var snapshotRevision = 0
+    @Published private(set) var ocrBusyKeys = Set<String>()
+    @Published private(set) var ocrErrors: [String: String] = [:]
+    private var ocrTasks: [String: Task<Void, Never>] = [:]
     private(set) var captureGeneration = 0
     private(set) var libraryGeneration = 0
     var actionGeneration: Int { captureGeneration + libraryGeneration }
@@ -94,7 +99,10 @@ final class SQLiteHistoryStore: HistoryStore {
         guard generation == captureGeneration else { return .success }
         let mutation = await repository.add(item, captureGeneration: generation)
         apply(mutation.snapshot)
-        if mutation.result.isSuccess, generation == captureGeneration { captureErrorMessage = nil }
+        if mutation.result.isSuccess, generation == captureGeneration {
+            captureErrorMessage = nil
+            if item.kind == .image { recognizeText(in: item) }
+        }
         return mutation.result
     }
 
@@ -185,6 +193,58 @@ final class SQLiteHistoryStore: HistoryStore {
 
     func loadLibrary() async { apply(await repository.loadLibrary()) }
     func retryStorage() async { apply(await repository.retryStorage()) }
+
+    func configureFolderSync(enabled: Bool, folder: String? = nil) async throws { apply(try await repository.configureFolderSync(enabled: enabled, folder: folder)) }
+    func syncOutbox() async throws -> [(id: UUID, data: Data)] { try await repository.syncOutbox() }
+    func acknowledgeSync(_ id: UUID) async throws { try await repository.acknowledgeSync(id) }
+    func hasReceivedSync(_ id: UUID) async throws -> Bool { try await repository.hasReceivedSync(id) }
+    func applySyncEvent(_ event: LibrarySyncEvent, generation: Int) async throws {
+        guard generation == libraryGeneration else { throw LibraryError.cleared }
+        apply(try await repository.applySyncEvent(event, generation: generation))
+        clearImageCache()
+    }
+
+    func recognizeText(in item: ClipboardItem, force: Bool = false) {
+        guard item.kind == .image, ocrTasks[item.ocrKey] == nil,
+              force || !item.hasRecognizedText else { return }
+        let key = item.ocrKey
+        let historyGeneration = captureGeneration, savedGeneration = libraryGeneration
+        ocrBusyKeys.insert(key)
+        ocrErrors[key] = nil
+        ocrTasks[key] = Task { [weak self] in
+            guard let self else { return }
+            defer { self.ocrTasks[key] = nil; self.ocrBusyKeys.remove(key) }
+            do {
+                let loaded = try await self.repository.resolve(item)
+                guard let data = ClipboardImageProcessor.imageData(in: loaded.assets) else { throw HistoryItemLoadError.unavailable }
+                let text = try await OCRService.shared.recognize(data)
+                try Task.checkCancellation()
+                guard historyGeneration == self.captureGeneration, savedGeneration == self.libraryGeneration else { return }
+                self.apply(try await self.repository.saveRecognizedText(text, item: item,
+                          historyGeneration: historyGeneration, savedGeneration: savedGeneration))
+            } catch is CancellationError { }
+            catch {
+                if historyGeneration == self.captureGeneration, savedGeneration == self.libraryGeneration {
+                    self.ocrErrors[key] = error.localizedDescription
+                }
+            }
+        }
+    }
+
+    func cancelRecognition(for item: ClipboardItem) { ocrTasks[item.ocrKey]?.cancel() }
+
+    func exportLibrary(to url: URL) async throws { try await repository.exportLibrary(to: url) }
+
+    func importLibrary(from url: URL) async throws -> (added: Int, skipped: Int) {
+        let generation = libraryGeneration
+        let archive = try await Task.detached(priority: .userInitiated) { try LibraryArchive.read(from: url) }.value
+        try Task.checkCancellation()
+        guard generation == libraryGeneration else { throw LibraryError.cleared }
+        let result = try await repository.importLibrary(archive, generation: generation)
+        apply(result.snapshot)
+        clearImageCache()
+        return (result.added, result.skipped)
+    }
 
     func saveLibrary(_ draft: LibraryDraft) async -> LibraryMutation {
         let mutation = await repository.saveLibrary(draft)
@@ -284,6 +344,14 @@ final class SQLiteHistoryStore: HistoryStore {
         try Task.checkCancellation()
         guard !loaded.isExpired else { throw HistoryItemLoadError.unavailable }
         return loaded
+    }
+
+    func isCurrent(_ item: ClipboardItem) -> Bool {
+        guard !item.isExpired else { return false }
+        if item.origin == .library {
+            return libraryItems.contains { $0.id == item.id && $0.revision == item.contentRevision && $0.content.contentHash == item.contentHash }
+        }
+        return items.contains { $0.id == item.id && $0.contentHash == item.contentHash }
     }
 
     func image(for item: ClipboardItem, maxPixelSize: Int) async -> NSImage? {

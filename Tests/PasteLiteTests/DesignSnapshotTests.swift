@@ -38,12 +38,22 @@ struct DesignSnapshotTests {
             try await render(panel, name: "library-\(theme.rawValue)", size: NSSize(width: 880, height: 560), output: outputURL)
             prefs.showPreview = false
             try await render(panel, name: "library-compact-\(theme.rawValue)", size: NSSize(width: 520, height: 560), output: outputURL)
+            state.isSelecting = true
+            for item in state.visibleItems.prefix(2) { state.toggleSelection(item) }
+            try await render(panel, name: "multi-select-compact-\(theme.rawValue)", size: NSSize(width: 520, height: 560), output: outputURL)
+            state.addToStack(state.selectedItems)
+            try await render(PasteStackView(appState: state, onNext: {}, onCancel: {}), name: "paste-stack-\(theme.rawValue)", size: NSSize(width: 420, height: 280), output: outputURL)
+            state.isSelecting = false
             prefs.showPreview = true
             let editor = LibraryDraft(type: .snippet, name: "需求整理", body: "请整理以下需求：\n\n1. 用户场景\n2. 功能范围\n3. 验收标准", kind: .text, generation: store.libraryGeneration)
             let editorState = AppState()
             editorState.beginEditing(editor)
             try await render(SnippetEditorView(appState: editorState, store: store, initial: editor),
                              name: "snippet-editor-\(theme.rawValue)", size: NSSize(width: 480, height: 460), output: outputURL)
+            if let item = state.visibleItems.first {
+                let tool = TextToolDraft(item: item, text: "Hello {{name}}\nTopic: {{主题}}", paste: false, plainText: true, generation: store.actionGeneration)
+                try await render(TextToolView(draft: tool, onUse: { _ in }, onCancel: {}), name: "template-\(theme.rawValue)", size: NSSize(width: 480, height: 410), output: outputURL)
+            }
             state.mode = .history
             try await resultsReady(state)
             for page in SettingsPage.allCases {

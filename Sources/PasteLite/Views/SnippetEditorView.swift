@@ -7,7 +7,8 @@ struct SnippetEditorView: View {
     let initial: LibraryDraft
     @State private var error: String?
     @State private var confirmDiscard = false
-    @FocusState private var nameFocused: Bool
+    private enum Field: Hashable { case name, body }
+    @FocusState private var focusedField: Field?
 
     private var draft: LibraryDraft { appState.editorDraft ?? initial }
 
@@ -15,7 +16,7 @@ struct SnippetEditorView: View {
         VStack(alignment: .leading, spacing: 14) {
             Text(title).font(.system(size: 18, weight: .semibold))
             TextField("Name", text: binding(\.name)).textFieldStyle(.roundedBorder)
-                .focused($nameFocused).accessibilityLabel("Saved item name")
+                .focused($focusedField, equals: .name).accessibilityLabel("Saved item name")
             HStack {
                 Text("Group").frame(width: 60, alignment: .leading)
                 Picker("Group", selection: optionalGroupBinding) {
@@ -32,6 +33,7 @@ struct SnippetEditorView: View {
             if draft.isSnippet {
                 Text("Content").font(.system(size: 12, weight: .medium))
                 TextEditor(text: binding(\.body))
+                    .focused($focusedField, equals: .body)
                     .font(.system(size: 13, design: draft.kind == .code ? .monospaced : .default))
                     .padding(5).background(Color(nsColor: .textBackgroundColor))
                     .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.secondary.opacity(0.3)))
@@ -39,6 +41,7 @@ struct SnippetEditorView: View {
                     .accessibilityLabel("Snippet content")
                 Text("Saved as plain text. The original copied content stays unchanged.")
                     .font(.system(size: 11)).foregroundStyle(.secondary)
+                Text("\(draft.body.utf8.count) / 1,048,576 UTF-8 bytes").font(.caption2).foregroundColor(draft.body.utf8.count > LibraryValidation.snippetByteLimit ? .red : .secondary)
             } else {
                 Text("The original text formatting, image, or file reference will be preserved.")
                     .font(.system(size: 12)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
@@ -58,7 +61,7 @@ struct SnippetEditorView: View {
         .padding(22).frame(width: 480, height: draft.isSnippet ? 460 : 235)
         .background(Color(nsColor: .windowBackgroundColor))
         .interactiveDismissDisabled()
-        .onAppear { nameFocused = true }
+        .onAppear { focusedField = .name }
         .onChange(of: appState.editorCloseRequest) { _ in requestClose() }
         .onExitCommand { requestClose() }
         .alert("Save Changes?", isPresented: $confirmDiscard) {
@@ -97,6 +100,7 @@ struct SnippetEditorView: View {
             if value.isSnippet { try LibraryValidation.snippet(value.body, kind: value.kind) }
         } catch { self.error = error.localizedDescription; return }
         appState.isEditorSaving = true
+        let retryFocus = focusedField ?? (draft.isSnippet ? .body : .name)
         error = nil
         Task { @MainActor in
             let result = await store.saveLibrary(value)
@@ -105,7 +109,7 @@ struct SnippetEditorView: View {
             case .success:
                 if let id = result.itemID, let item = store.libraryItems.first(where: { $0.id == id }) { appState.revealSaved(item) }
                 appState.finishEditing()
-            case let .failure(message): error = message
+            case let .failure(message): error = message; focusedField = retryFocus
             }
         }
     }

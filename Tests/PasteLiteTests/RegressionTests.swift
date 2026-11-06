@@ -7,9 +7,9 @@ import Testing
 @MainActor
 struct RegressionTests {
     @Test
-    func developmentVersionIs032() {
-        #expect(AppInfo.fallbackVersion == "0.4.0")
-        #expect(AppInfo.fallbackBuild == "40")
+    func developmentVersionIs041() {
+        #expect(AppInfo.fallbackVersion == "0.4.1")
+        #expect(AppInfo.fallbackBuild == "41")
     }
 
     @Test

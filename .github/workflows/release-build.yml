@@ -11,11 +11,11 @@ permissions:
 
 jobs:
   build:
-    runs-on: macos-15-intel
+    runs-on: macos-15
     timeout-minutes: 30
     env:
-      APP_VERSION: "0.4.0"
-      APP_BUILD: "40"
+      APP_VERSION: "0.4.1"
+      APP_BUILD: "41"
       SWIFT_TEST_BUILD_SYSTEM: native
 
     steps:
@@ -23,6 +23,7 @@ jobs:
 
       - name: Show toolchain
         run: |
+          test "$(uname -m)" = "arm64"
           xcode-select -p
           swift --version
 
@@ -41,14 +42,14 @@ jobs:
             ./script/build_and_run.sh --package
           python3 script/review_runtime.py dist/runtime-review/PasteLite.app
 
-      - name: Build both architectures
+      - name: Build Apple Silicon release
         run: ./script/package_release.sh
 
       - name: Verify packaged applications
         run: |
           set -euo pipefail
 
-          for arch in arm64 x86_64; do
+          for arch in arm64; do
             app="dist/release/stage-$arch/PasteLite.app"
             dmg="dist/release/PasteLite-$APP_VERSION-macos-$arch.dmg"
             mount_dir="$RUNNER_TEMP/PasteLite-$arch"
@@ -60,7 +61,7 @@ jobs:
               "https://api.github.com/repos/MoarLiu/PasteLite/releases/latest"
             codesign --verify --deep --strict "$app"
 
-            if [[ "$arch" == "x86_64" ]]; then
+            if [[ "$arch" == "arm64" ]]; then
               suite="PasteLite.CISmoke.$GITHUB_RUN_ID"
               defaults write "$suite" design.automaticUpdates -bool false
               defaults write "$suite" design.recordingPaused -bool true
@@ -88,8 +89,6 @@ jobs:
           cd dist/release
           shasum -a 256 -c "PasteLite-$APP_VERSION-macos-arm64.app.zip.sha256"
           shasum -a 256 -c "PasteLite-$APP_VERSION-macos-arm64.dmg.sha256"
-          shasum -a 256 -c "PasteLite-$APP_VERSION-macos-x86_64.app.zip.sha256"
-          shasum -a 256 -c "PasteLite-$APP_VERSION-macos-x86_64.dmg.sha256"
 
       - uses: actions/upload-artifact@v4
         with:

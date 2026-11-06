@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.4.1 - 2026-11-07
+
+Version 0.4.1 (build 41).
+
+- Export and import saved-library JSON backups, including groups, names, snippets, original formats and image payloads. Imports merge atomically and preserve existing items and edits.
+- Recognize image text locally with Apple Vision, persist it for search, and provide copy, retry and cancellation controls.
+- Filter history and saved content by source application.
+- Select multiple items in a chosen order and copy their text with a selectable separator.
+- Queue content in Paste Stack, reorder or remove entries, and paste one item at a time into an explicitly retained target. Failed actions retain the queue head.
+- Explain the 1 MiB snippet limit at the creation entry point and show the current UTF-8 byte count in the editor.
+- Show full group names in tooltips and use one Settings scene for menu and keyboard entry points.
+- Update the primary action when its paste target exits, and protect queue popovers from premature panel dismissal.
+- Use a subtle tinted selection surface with a fine outline and side marker; retain semantic text colors and use deeper action colors with white labels.
+- Support Apple Silicon only from 0.4.1 onward; build, CI, packaging and updater asset selection target arm64.
+- Recheck source revisions before Paste, keep newer clipboard contents during merge, stop script child processes on cancellation, and reconcile sync folder changes and deletion replay.
+- Fill snippet variables before copying or pasting; run explicitly chosen local shell text transformations with a result preview.
+- Add an opt-in authenticated loopback MCP server for read-only history and saved-content search.
+- Sync saved content and groups through a chosen shared folder with durable events, conflict ordering, deletion propagation and retry.
+- Reduce repeated panel refreshes and long-text drawing; show more preview text on demand while copying the full payload.
+
+Upgrade: schema v4 receives compatible OCR/sync extensions in place; rollback to 0.4.0 remains readable. Image recognition stays on the Mac.
+File entries in backups remain references to their original paths. Importing a
+backup is a merge and does not replace or revert existing edits. Backups support
+up to 256 MiB per JSON file. Folder sync shares readable JSON history; existing
+shared copies remain after clearing this Mac. MCP is disabled by default and
+requires a generated token. Scripts run only when explicitly selected and run.
+See `docs/acceptance-0.4.1.md` for validation and remaining device coverage.
+
 ## 0.4.0 - 2026-11-07
 
 Version 0.4.0 (build 40).

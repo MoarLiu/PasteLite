@@ -198,7 +198,7 @@ actor HistoryRepository {
                 do {
                     try database.execute(includePinned ? "DELETE FROM history_items;" : "DELETE FROM history_items WHERE is_pinned = 0;")
                     if includePinned {
-                        try database.execute("DELETE FROM library_items; DELETE FROM library_groups;")
+                        try database.execute("DELETE FROM library_items; DELETE FROM library_groups; DELETE FROM sync_outbox; DELETE FROM sync_received; DELETE FROM sync_versions; DELETE FROM sync_snapshot_deletions; DELETE FROM sync_settings;")
                     }
                     try database.execute("COMMIT;")
                 } catch {
@@ -365,8 +365,20 @@ actor HistoryRepository {
 
     func snapshot() -> HistorySnapshot {
         revision += 1
-        return HistorySnapshot(revision: revision, items: items.map(\.metadataOnly), storageWarning: storageWarning,
-                               errorMessage: errorMessage, libraryItems: libraryItems.map(\.metadataOnly),
+        let recognized = ocrSnapshot()
+        func enrich(_ item: ClipboardItem) -> ClipboardItem {
+            var value = item.metadataOnly
+            value.recognizedText = recognized[item.ocrKey] ?? ""
+            value.hasRecognizedText = recognized[item.ocrKey] != nil
+            return value
+        }
+        let saved = libraryItems.map { item -> LibraryItem in
+            var value = item.metadataOnly
+            value.content = enrich(item.content)
+            return value
+        }
+        return HistorySnapshot(revision: revision, items: items.map(enrich), storageWarning: storageWarning,
+                               errorMessage: errorMessage, libraryItems: saved,
                                libraryGroups: libraryGroups, isLibraryAvailable: database != nil,
                                libraryErrorMessage: libraryErrorMessage)
     }
@@ -429,6 +441,10 @@ actor HistoryRepository {
             if !names.contains("expires_at") { try database.execute("ALTER TABLE history_items ADD COLUMN expires_at REAL;") }
             try database.execute("UPDATE history_items SET expires_at = copied_at + 86400 WHERE kind = 'concealed' AND expires_at IS NULL;")
             try migrateLibrary(database, migratePins: version < 4)
+            // OCR is an additive extension. Keep the existing version marker so
+            // the 0.4.0 installer rollback can still open history and saved data.
+            try migrateOCR(database)
+            try migrateFolderSync(database)
             try database.execute("PRAGMA user_version = 4;")
             try database.execute("COMMIT;")
         } catch {

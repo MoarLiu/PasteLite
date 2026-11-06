@@ -55,6 +55,8 @@ final class AppPreferences: ObservableObject {
     @Published var updateEndpoint: String { didSet { save(updateEndpoint, "updateEndpoint") } }
     @Published var settingsPage: SettingsPage = .general
     @Published var lastLibraryGroup: String { didSet { save(lastLibraryGroup, "lastLibraryGroup") } }
+    @Published var localMCPEnabled: Bool { didSet { save(localMCPEnabled, "localMCPEnabled") } }
+    @Published var syncFolder: String { didSet { save(syncFolder, "syncFolder") } }
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
@@ -76,6 +78,8 @@ final class AppPreferences: ObservableObject {
         updateChannel = UpdateChannel(rawValue: value("updateChannel")) ?? .stable
         updateEndpoint = value("updateEndpoint")
         lastLibraryGroup = value("lastLibraryGroup")
+        localMCPEnabled = defaults.bool(forKey: "design.localMCPEnabled")
+        syncFolder = value("syncFolder")
     }
 
     private func save(_ value: Any, _ key: String) { defaults.set(value, forKey: "design.\(key)") }

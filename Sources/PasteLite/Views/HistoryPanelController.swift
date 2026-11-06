@@ -17,6 +17,8 @@ final class HistoryPanelController: NSWindowController {
     private var storeObserver: AnyCancellable?
     private var observedLibraryGeneration = 0
     private var observedCaptureGeneration = 0
+    private var resultObserver: AnyCancellable?
+    private var targetTerminationObserver: AnyCancellable?
 
     private var currentItems: [ClipboardItem] {
         appState.visibleItems
@@ -74,14 +76,22 @@ final class HistoryPanelController: NSWindowController {
                     Task { self.report(await self.historyStore.moveLibraryItem(item, groupID: group)) }
                 },
                 onClearLibrary: { [weak self] in self?.confirmAndClearLibrary() },
-                onOpenLink: { [weak self] url in self?.close(); NSWorkspace.shared.open(url) }
+                onOpenLink: { [weak self] url in self?.close(); NSWorkspace.shared.open(url) },
+                onExport: { [weak self] in self?.exportBackup() },
+                onImport: { [weak self] in self?.importBackup() },
+                onMerge: { [weak self] in self?.copyMergedSelection() },
+                onStackNext: { [weak self] in self?.pasteStackNext() },
+                onStackCancel: { [weak self] in self?.cancelClipboardAction() },
+                onScript: { [weak self] item in self?.chooseScript(for: item) },
+                onTextToolUse: { [weak self] text in self?.useTextToolOutput(text) }
             )
         )
         preferenceObserver = preferences.$showPreview.removeDuplicates().sink { [weak self] preview in
             DispatchQueue.main.async { self?.resizePanel(preview: preview) }
         }
-        actionsObserver = appState.$actionsPresented.removeDuplicates().dropFirst().sink { [weak self] presented in
-            guard !presented else { return }
+        actionsObserver = Publishers.CombineLatest(appState.$actionsPresented, appState.$stackPresented)
+            .removeDuplicates { $0.0 == $1.0 && $0.1 == $1.1 }.dropFirst().sink { [weak self] presented in
+            guard !presented.0, !presented.1 else { return }
             DispatchQueue.main.async {
                 guard let self, let window = self.window, window.isVisible,
                       !window.isKeyWindow, window.attachedSheet == nil else { return }
@@ -96,10 +106,29 @@ final class HistoryPanelController: NSWindowController {
                     self.cancelClipboardAction()
                     self.observedLibraryGeneration = self.historyStore.libraryGeneration
                     self.observedCaptureGeneration = self.historyStore.captureGeneration
+                    let historyIDs = Set(self.historyStore.items.map(\.id))
+                    let savedIDs = Set(self.historyStore.libraryItems.map(\.id))
+                    self.appState.stack.removeAll { $0.origin == .history ? !historyIDs.contains($0.id) : !savedIDs.contains($0.id) }
+                    if self.appState.stack.isEmpty { self.appState.resetStackTarget() }
                 }
             }
         }
         refreshResults()
+        targetTerminationObserver = NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.didTerminateApplicationNotification)
+            .sink { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    guard let self, self.previousApp?.isTerminated == true else { return }
+                    self.previousApp = nil
+                    self.appState.pasteTargetName = nil
+                }
+            }
+        resultObserver = appState.$isUpdatingResults.removeDuplicates().sink { [weak self] updating in
+            guard !updating else { return }
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.appState.recordVisibleResults(window: self.window)
+            }
+        }
     }
 
     required init?(coder: NSCoder) {
@@ -117,6 +146,7 @@ final class HistoryPanelController: NSWindowController {
     override func close() {
         guard !isOrderingOut else { return }
         if appState.editorDraft != nil { appState.requestEditorDismissal(); return }
+        if appState.textToolDraft != nil { appState.textToolDraft = nil; return }
         if appState.groupDraft != nil { return }
         cancelClipboardAction()
         hidePanel()
@@ -125,17 +155,18 @@ final class HistoryPanelController: NSWindowController {
     private func hidePanel() {
         guard !isOrderingOut else { return }
         isOrderingOut = true
+        appState.stackPresented = false
         window?.orderOut(nil)
         isOrderingOut = false
     }
 
     private func show(anchor: NSView?, target: NSRunningApplication?) {
+        if PerformanceRecorder.enabled { appState.presentationStartedAt = ProcessInfo.processInfo.systemUptime }
         cancelClipboardAction()
         let frontmostApp = target ?? NSWorkspace.shared.frontmostApplication
         previousApp = frontmostApp?.processIdentifier == ProcessInfo.processInfo.processIdentifier ? nil : frontmostApp
         appState.pasteTargetName = previousApp?.localizedName
         appState.prepareForPresentation()
-        refreshResults()
         position(anchor: anchor)
         window?.orderFrontRegardless()
         window?.makeKey()
@@ -159,6 +190,7 @@ final class HistoryPanelController: NSWindowController {
         clipboardActionTask = nil
         clipboardActionID = nil
         appState.isPerformingClipboardAction = false
+        appState.stackBusy = false
     }
 
     private func beginClipboardAction() -> UUID {
@@ -178,6 +210,8 @@ final class HistoryPanelController: NSWindowController {
     }
 
     private func copyToClipboard(_ item: ClipboardItem, dismissOnSuccess: Bool = false, plainText: Bool = false) {
+        if appState.isSelecting { copyMergedSelection(); return }
+        if prepareTemplate(item, paste: false, plainText: plainText) { return }
         let id = beginClipboardAction()
         clipboardActionTask = Task { [weak self] in
             guard let self else { return }
@@ -195,10 +229,67 @@ final class HistoryPanelController: NSWindowController {
     }
 
     private func performPrimaryAction(_ item: ClipboardItem, alternate: Bool = false) {
+        if appState.isSelecting { copyMergedSelection(); return }
+        if previousApp?.isTerminated == true { previousApp = nil; appState.pasteTargetName = nil }
         let plain = alternate ? !preferences.plainText : preferences.plainText
+        if prepareTemplate(item, paste: preferences.selectionAction == .paste && AccessibilityService.isTrusted() && previousApp != nil, plainText: plain) { return }
         if preferences.selectionAction == .copy || !AccessibilityService.isTrusted() || previousApp == nil {
             copyToClipboard(item, dismissOnSuccess: true, plainText: plain)
         } else { paste(item, plainText: plain) }
+    }
+
+    private func prepareTemplate(_ item: ClipboardItem, paste: Bool, plainText: Bool, fromStack: Bool = false) -> Bool {
+        guard item.origin == .library, historyStore.libraryItems.first(where: { $0.id == item.id })?.type == .snippet,
+              !TextTemplate(text: item.previewText).variables.isEmpty else { return false }
+        guard TextTemplate(text: item.previewText).variables.count <= 64 else { appState.showStatus("A template supports up to 64 variables."); return true }
+        appState.textToolDraft = TextToolDraft(item: item, text: item.previewText, paste: paste, plainText: plainText, generation: historyStore.actionGeneration, fromStack: fromStack)
+        return true
+    }
+
+    private func chooseScript(for item: ClipboardItem) {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.shellScript]; panel.allowsMultipleSelection = false
+        panel.message = "Choose a shell script that reads UTF-8 stdin and returns UTF-8 stdout. You can review and run it in the next step."
+        guard let window else { return }
+        panel.beginSheetModal(for: window) { [weak self] response in
+            guard response == .OK, let script = panel.url, let self else { return }
+            Task { @MainActor in
+                do {
+                    let loaded = try await self.historyStore.resolve(item)
+                    guard loaded.kind != .concealed, let text = ClipboardTextRepresentation.string(in: loaded.assets) else { throw LibraryError.invalid("This content has no editable text.") }
+                    self.appState.textToolDraft = TextToolDraft(item: item, text: text, script: script, paste: false, plainText: true, generation: self.historyStore.actionGeneration)
+                } catch { self.appState.showStatus(error.localizedDescription, clearAfter: 6) }
+            }
+        }
+    }
+
+    private func useTextToolOutput(_ text: String) {
+        guard let draft = appState.textToolDraft else { return }
+        let request = beginClipboardAction()
+        clipboardActionTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                guard draft.generation == self.historyStore.actionGeneration else { throw LibraryError.cleared }
+                _ = try await self.historyStore.resolve(draft.item)
+                try Task.checkCancellation()
+                guard draft.generation == self.historyStore.actionGeneration else { throw LibraryError.cleared }
+                self.appState.textToolDraft = nil
+                let prepared = TextToolOutput.item(text)
+                let result: PasteServiceResult
+                if draft.paste {
+                    result = await self.pasteService.paste(prepared, into: self.previousApp, plainText: draft.plainText, validating: [draft.item]) { [weak self] in self?.hidePanel() }
+                } else { result = await self.pasteService.copyToClipboard(prepared, validating: [draft.item]) }
+                guard self.finishClipboardAction(id: request) else { return }
+                self.appState.apply(result)
+                if result.isSuccess {
+                    if draft.fromStack, self.appState.stack.first?.id == draft.item.id { self.appState.stack.removeFirst() }
+                    await self.historyStore.recordUse(draft.item)
+                } else { self.window?.orderFrontRegardless(); self.window?.makeKey() }
+            } catch {
+                guard self.finishClipboardAction(id: request) else { return }
+                self.appState.showStatus(error.localizedDescription, clearAfter: 6)
+            }
+        }
     }
 
     private func paste(_ item: ClipboardItem, plainText: Bool) {
@@ -314,6 +405,104 @@ final class HistoryPanelController: NSWindowController {
                                           body: "", kind: .text, generation: historyStore.libraryGeneration))
     }
 
+    private func copyMergedSelection() {
+        let selected = appState.selectedItems
+        let separator = appState.mergeSeparator
+        let clipboardVersion = pasteService.clipboardChangeCount
+        guard !selected.isEmpty else { appState.showStatus("Select items to merge."); return }
+        let request = beginClipboardAction()
+        let generation = historyStore.actionGeneration
+        clipboardActionTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                var loaded: [ClipboardItem] = []
+                for item in selected { loaded.append(try await self.historyStore.resolve(item)); try Task.checkCancellation() }
+                guard generation == self.historyStore.actionGeneration else { throw LibraryError.cleared }
+                let merged = try await Task.detached(priority: .userInitiated) { try MergedCopy.item(from: loaded, separator: separator) }.value
+                try Task.checkCancellation()
+                guard generation == self.historyStore.actionGeneration else { throw LibraryError.cleared }
+                let result = await self.pasteService.copyToClipboard(merged, validating: selected, expectedChangeCount: clipboardVersion)
+                guard self.finishClipboardAction(id: request) else { return }
+                self.appState.apply(result)
+                if result.isSuccess { for item in selected { await self.historyStore.recordUse(item) } }
+            } catch {
+                guard self.finishClipboardAction(id: request) else { return }
+                self.appState.showStatus(error.localizedDescription, clearAfter: 6)
+            }
+        }
+    }
+
+    func pasteStackNext() {
+        guard !appState.stackBusy, appState.editorDraft == nil, appState.groupDraft == nil,
+              let item = appState.stack.first else { return }
+        guard let target = previousApp, !target.isTerminated,
+              target.processIdentifier != ProcessInfo.processInfo.processIdentifier else {
+            appState.showStatus("Open the panel from the app you want to paste into."); return
+        }
+        if let pid = appState.stackTargetPID, pid != target.processIdentifier {
+            appState.showStatus("The stack target changed. Choose Use Current Target to continue.", clearAfter: 6); return
+        }
+        appState.stackTargetPID = target.processIdentifier
+        appState.stackTargetName = target.localizedName
+        if prepareTemplate(item, paste: true, plainText: preferences.plainText, fromStack: true) {
+            appState.stackPresented = false
+            return
+        }
+        let request = beginClipboardAction()
+        appState.stackBusy = true
+        let plain = preferences.plainText
+        clipboardActionTask = Task { [weak self] in
+            guard let self else { return }
+            let result = await self.pasteService.paste(item, into: target, plainText: plain) { [weak self] in self?.hidePanel() }
+            guard self.finishClipboardAction(id: request) else { return }
+            self.appState.stackBusy = false
+            self.appState.apply(result)
+            if result.isSuccess {
+                self.appState.stack.removeFirst()
+                await self.historyStore.recordUse(item)
+            } else {
+                self.window?.orderFrontRegardless(); self.window?.makeKey()
+            }
+        }
+    }
+
+    private func exportBackup() {
+        cancelClipboardAction()
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = "PasteLite-Library-Backup.json"
+        panel.allowedContentTypes = [.json]
+        panel.message = "Includes saved text, groups, original formats and images. File entries remain references."
+        guard let window else { return }
+        panel.beginSheetModal(for: window) { [weak self] response in
+            guard response == .OK, let url = panel.url, let self else { return }
+            Task {
+                do { try await self.historyStore.exportLibrary(to: url); self.appState.showStatus("Library backup saved.") }
+                catch { self.appState.showStatus(error.localizedDescription, clearAfter: 8) }
+            }
+        }
+    }
+
+    private func importBackup() {
+        cancelClipboardAction()
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.json]
+        panel.allowsMultipleSelection = false
+        panel.message = "Merge a PasteLite backup. Existing items, names and edits are kept; duplicates are skipped. File references require the original paths."
+        guard let window else { return }
+        panel.beginSheetModal(for: window) { [weak self] response in
+            guard response == .OK, let url = panel.url, let self else { return }
+            Task {
+                do {
+                    let result = try await self.historyStore.importLibrary(from: url)
+                    self.appState.mode = .library
+                    self.appState.selectedGroup = .all
+                    self.appState.searchText = ""; self.appState.selectedFilter = .all; self.appState.selectedSource = nil
+                    self.appState.showStatus("Imported \(result.added) items; skipped \(result.skipped) existing items.", clearAfter: 6)
+                } catch { self.appState.showStatus(error.localizedDescription, clearAfter: 8) }
+            }
+        }
+    }
+
     private func editSaved(_ item: LibraryItem) {
         appState.beginEditing(LibraryDraft(editingID: item.id, expectedRevision: item.revision, type: item.type,
                                           name: item.name, groupID: item.groupID, body: item.content.previewText,
@@ -378,8 +567,11 @@ final class HistoryPanelController: NSWindowController {
         }
     }
 
-    var hasOpenEditor: Bool { appState.editorDraft != nil }
-    func finishEditorBeforeQuit(_ action: @escaping @MainActor () -> Void) { appState.requestEditorDismissal(afterDismiss: action) }
+    var hasOpenEditor: Bool { appState.editorDraft != nil || appState.textToolDraft != nil }
+    func finishEditorBeforeQuit(_ action: @escaping @MainActor () -> Void) {
+        if appState.textToolDraft != nil { appState.textToolDraft = nil; action() }
+        else { appState.requestEditorDismissal(afterDismiss: action) }
+    }
 
     private func configure(_ panel: HistoryPanel) {
         panel.level = .floating
@@ -399,12 +591,13 @@ final class HistoryPanelController: NSWindowController {
         panel.standardWindowButton(.zoomButton)?.isHidden = true
         panel.onResignKey = { [weak self] in
             guard let self, self.window?.isVisible == true,
-                  self.window?.attachedSheet == nil, !self.appState.actionsPresented else { return }
+                  self.window?.attachedSheet == nil, !self.appState.actionsPresented, !self.appState.stackPresented else { return }
             self.close()
         }
         panel.onCancel = { [weak self] in
             guard let self else { return }
-            if self.appState.actionsPresented { self.appState.actionsPresented = false }
+            if self.appState.stackPresented { self.appState.stackPresented = false }
+            else if self.appState.actionsPresented { self.appState.actionsPresented = false }
             else if !self.appState.searchText.isEmpty { self.appState.searchText = "" }
             else { self.close() }
         }

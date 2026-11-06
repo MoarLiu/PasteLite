@@ -38,9 +38,12 @@ def main():
                 saved = connection.execute("SELECT COUNT(*) FROM library_items").fetchone()[0]
                 saved_assets = connection.execute("SELECT COUNT(*) FROM library_assets").fetchone()[0]
                 groups = connection.execute("SELECT COUNT(*) FROM library_groups").fetchone()[0]
-            if items or assets or saved or saved_assets or groups:
+                recognized = connection.execute("SELECT COUNT(*) FROM recognized_text").fetchone()[0]
+                sync_count = sum(connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+                                 for table in ["sync_outbox", "sync_received", "sync_versions", "sync_settings", "sync_snapshot_deletions"])
+            if items or assets or saved or saved_assets or groups or recognized or sync_count:
                 raise RuntimeError(f"Quit left data: {items} history, {assets} history assets, {saved} saved, {saved_assets} saved assets, {groups} groups.")
-            print("PASS: repeated quit waited for history, saved items, groups, and attachment clearing.")
+            print("PASS: repeated quit waited for history, saved items, groups, OCR, sync metadata and attachment clearing.")
         finally:
             if process.poll() is None:
                 process.kill()

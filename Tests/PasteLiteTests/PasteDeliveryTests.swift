@@ -151,6 +151,39 @@ struct PasteDeliveryTests {
         }
     }
 
+    @Test(arguments: [false, true]) func changedSourceWhileWaitingNeverSendsOriginalOrTransformedPaste(transformed: Bool) async throws {
+        try await libraryFixture { store, _, _ in
+            var draft = snippetDraft(name: "Alias", body: "Old text", generation: store.libraryGeneration)
+            _ = await store.saveLibrary(draft)
+            let saved = try #require(store.libraryItems.first)
+            draft.editingID = saved.id; draft.expectedRevision = saved.revision; draft.body = "New text"
+            let pasteboard = board()
+            defer { pasteboard.releaseGlobally() }
+            let environment = ControlledPasteEnvironment()
+            environment.onAsyncWait = { _ = await store.saveLibrary(draft) }
+            defer { environment.onAsyncWait = nil }
+            let service = PasteService(historyStore: store, pasteboard: pasteboard, environment: environment)
+            let item = transformed ? TextToolOutput.item("Expanded old text") : saved.displayItem
+            #expect(!(await service.paste(item, into: .current, validating: transformed ? [saved.displayItem] : [])).isSuccess)
+            #expect(environment.sentCount == 0)
+        }
+    }
+
+    @Test func mergedCopyRejectsClipboardChangesBeforeItsFinalWrite() async throws {
+        try await libraryFixture { store, _, _ in
+            let item = librarySample("first")
+            _ = await store.add(item)
+            let pasteboard = board()
+            defer { pasteboard.releaseGlobally() }
+            let service = PasteService(historyStore: store, pasteboard: pasteboard)
+            let count = service.clipboardChangeCount
+            pasteboard.clearContents(); pasteboard.setString("new copy", forType: .string)
+            let merged = TextToolOutput.item("merged first")
+            #expect(!(await service.copyToClipboard(merged, validating: [item], expectedChangeCount: count)).isSuccess)
+            #expect(pasteboard.string(forType: .string) == "new copy")
+        }
+    }
+
     private func board() -> NSPasteboard {
         let pasteboard = NSPasteboard(name: NSPasteboard.Name("PasteDeliveryTests.\(UUID().uuidString)"))
         pasteboard.clearContents()

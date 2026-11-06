@@ -25,15 +25,18 @@ final class PasteService {
         self.pasteboard = pasteboard
     }
 
+    var clipboardChangeCount: Int { pasteboard.changeCount }
+
     @discardableResult
-    func copyToClipboard(_ item: ClipboardItem, plainText: Bool = false) async -> PasteServiceResult {
-        let changeCount = pasteboard.changeCount
+    func copyToClipboard(_ item: ClipboardItem, plainText: Bool = false, validating sources: [ClipboardItem] = [], expectedChangeCount: Int? = nil) async -> PasteServiceResult {
+        let changeCount = expectedChangeCount ?? pasteboard.changeCount
         let generation = historyStore?.actionGeneration
         do {
             let loaded = try await resolve(item)
             let prepared = try await prepare(loaded, plainText: plainText)
             try Task.checkCancellation()
-            guard pasteboard.changeCount == changeCount, historyStore?.actionGeneration == generation else {
+            guard pasteboard.changeCount == changeCount, historyStore?.actionGeneration == generation,
+                  current(item, sources: sources) else {
                 return .failure("The clipboard changed while loading this item. Please copy it again.")
             }
             return write(prepared)
@@ -46,7 +49,7 @@ final class PasteService {
 
     @discardableResult
     func paste(_ item: ClipboardItem, into previousApp: NSRunningApplication?,
-               plainText: Bool = false, beforeActivation: @MainActor () -> Void = {}) async -> PasteServiceResult {
+               plainText: Bool = false, validating sources: [ClipboardItem] = [], beforeActivation: @MainActor () -> Void = {}) async -> PasteServiceResult {
         guard let target = previousApp, !environment.isTerminated(target),
               target.processIdentifier != environment.ownProcessIdentifier else {
             return .failure("The target app is unavailable. Open history from the app you want to paste into.")
@@ -65,7 +68,7 @@ final class PasteService {
             guard !environment.isTerminated(target),
                   environment.frontmostProcessIdentifier == startingPID,
                   pasteboard.changeCount == originalChangeCount,
-                  historyStore?.actionGeneration == generation else {
+                  historyStore?.actionGeneration == generation, current(item, sources: sources) else {
                 return .failure("The active app or clipboard changed. Paste was cancelled.")
             }
             let result = write(prepared)
@@ -84,7 +87,7 @@ final class PasteService {
                 try Task.checkCancellation()
                 guard !environment.isTerminated(target), environment.isAccessibilityTrusted,
                       pasteboard.changeCount == writtenChangeCount,
-                      historyStore?.actionGeneration == generation else {
+                      historyStore?.actionGeneration == generation, current(item, sources: sources) else {
                     return .failure("The target app, permission, or clipboard changed. Paste was cancelled.")
                 }
                 let activePID = environment.frontmostProcessIdentifier
@@ -115,6 +118,11 @@ final class PasteService {
     func copyString(_ string: String) -> PasteServiceResult {
         write(ClipboardItem(title: string, kind: .text, contentHash: "",
                             previewText: string, assets: [.init(index: 0, pasteboardType: .string, data: Data(string.utf8))]))
+    }
+
+    private func current(_ item: ClipboardItem, sources: [ClipboardItem]) -> Bool {
+        let values = sources.isEmpty ? ((item.origin == .library || !item.hasLoadedAssets) ? [item] : []) : sources
+        return values.allSatisfy { historyStore?.isCurrent($0) == true }
     }
 
     private func prepare(_ item: ClipboardItem, plainText: Bool) async throws -> ClipboardItem {

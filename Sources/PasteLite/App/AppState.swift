@@ -1,4 +1,5 @@
 import Foundation
+import AppKit
 
 enum PanelMode: String, CaseIterable, Identifiable, Sendable {
     case history, library
@@ -11,6 +12,7 @@ private struct PanelListMemory {
     var filter: HistoryFilter = .all
     var selection: UUID?
     var index: Int?
+    var source: String?
 }
 
 @MainActor
@@ -20,13 +22,17 @@ final class AppState: ObservableObject {
     @Published var mode: PanelMode = .history {
         didSet {
             guard mode != oldValue, !isSwitchingMode else { return }
-            listMemory[oldValue] = PanelListMemory(query: searchText, filter: selectedFilter, selection: selectedItemID, index: lastResolvedSelectionIndex)
+            listMemory[oldValue] = PanelListMemory(query: searchText, filter: selectedFilter, selection: selectedItemID, index: lastResolvedSelectionIndex, source: selectedSource)
             let restored = listMemory[mode] ?? PanelListMemory()
             isSwitchingMode = true
             searchText = restored.query
             selectedFilter = restored.filter
             selectedItemID = restored.selection
             lastResolvedSelectionIndex = restored.index
+            selectedSource = restored.source
+            if let source = selectedSource, !sources.contains(where: { $0.key == source }) { selectedSource = nil }
+            multiSelection = []
+            isSelecting = false
             isSwitchingMode = false
             requestResults()
         }
@@ -39,6 +45,15 @@ final class AppState: ObservableObject {
         }
     }
     @Published var selectedItemID: UUID?
+    @Published var selectedSource: String? { didSet { if selectedSource != oldValue { criteriaChanged() } } }
+    @Published var isSelecting = false { didSet { if !isSelecting { multiSelection = [] } } }
+    @Published var multiSelection: [UUID] = []
+    @Published var mergeSeparator = "\n"
+    @Published var stack: [ClipboardItem] = []
+    @Published var stackTargetPID: Int32?
+    @Published var stackTargetName: String?
+    @Published var stackBusy = false
+    @Published var stackPresented = false
     @Published var statusMessage: String?
     @Published var pasteTargetName: String?
     @Published var isPerformingClipboardAction = false
@@ -50,6 +65,7 @@ final class AppState: ObservableObject {
     @Published private(set) var isUpdatingResults = false
     @Published var editorDraft: LibraryDraft?
     @Published var groupDraft: LibraryGroupDraft?
+    @Published var textToolDraft: TextToolDraft?
     @Published var editorCloseRequest = 0
     @Published var isEditorSaving = false
     private var initialEditorDraft: LibraryDraft?
@@ -57,11 +73,14 @@ final class AppState: ObservableObject {
     private var listMemory: [PanelMode: PanelListMemory] = [:]
     private var sourceHistory: [ClipboardItem] = []
     private var sourceLibrary: [LibraryItem] = []
+    private var sourceOptions: [PanelMode: [(key: String, name: String)]] = [:]
     private var resultTask: Task<Void, Never>?
     private var resultRequest = 0
     private var isSwitchingMode = false
     private var resetSelectionOnResults = false
     private var statusClearTask: Task<Void, Never>?
+    private(set) var queryStartedAt: TimeInterval?
+    var presentationStartedAt: TimeInterval?
 
     init() {
         selectedGroup = LibraryGroupSelection(storedValue: AppPreferences.shared.lastLibraryGroup)
@@ -70,11 +89,15 @@ final class AppState: ObservableObject {
     func prepareForPresentation() {
         isSwitchingMode = true
         let historyFilter = mode == .history ? selectedFilter : listMemory[.history]?.filter ?? .all
+        let historySource = mode == .history ? selectedSource : listMemory[.history]?.source
         listMemory = [:]
         mode = .history
         searchText = ""
         selectedFilter = historyFilter == .pinned ? .all : historyFilter
+        selectedSource = historySource
+        isSelecting = false
         actionsPresented = false
+        stackPresented = false
         selectedItemID = nil
         lastResolvedSelectionIndex = nil
         clearStatus()
@@ -87,19 +110,27 @@ final class AppState: ObservableObject {
     func refreshResults(history: [ClipboardItem], library: [LibraryItem], groups: [LibraryGroup]) {
         sourceHistory = history
         sourceLibrary = library
+        for mode in PanelMode.allCases {
+            let items = mode == .history ? history : library.map(\.displayItem)
+            var values: [String: String] = [:]
+            for item in items { values[item.sourceKey] = item.sourceAppName ?? "Unknown App" }
+            sourceOptions[mode] = values.map { (key: $0.key, name: $0.value) }.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+        }
         if let id = selectedGroup.groupID, !groups.contains(where: { $0.id == id }) { selectedGroup = .all }
+        if let source = selectedSource, !sources.contains(where: { $0.key == source }) { selectedSource = nil }
         requestResults()
     }
 
     func revealSaved(_ item: LibraryItem) {
         if mode == .history {
-            listMemory[.history] = PanelListMemory(query: searchText, filter: selectedFilter, selection: selectedItemID, index: lastResolvedSelectionIndex)
+            listMemory[.history] = PanelListMemory(query: searchText, filter: selectedFilter, selection: selectedItemID, index: lastResolvedSelectionIndex, source: selectedSource)
         }
         isSwitchingMode = true
         mode = .library
         selectedGroup = item.groupID.map(LibraryGroupSelection.group) ?? .ungrouped
         selectedFilter = .all
         searchText = ""
+        selectedSource = nil
         selectedItemID = item.id
         isSwitchingMode = false
         resetSelectionOnResults = false
@@ -107,6 +138,28 @@ final class AppState: ObservableObject {
     }
 
     func switchMode() { mode = mode == .history ? .library : .history }
+
+    var selectedItems: [ClipboardItem] {
+        let lookup = Dictionary(uniqueKeysWithValues: visibleItems.map { ($0.id, $0) })
+        return multiSelection.compactMap { lookup[$0] }
+    }
+
+    func toggleSelection(_ item: ClipboardItem) {
+        if let index = multiSelection.firstIndex(of: item.id) { multiSelection.remove(at: index) }
+        else { multiSelection.append(item.id) }
+        selectedItemID = item.id
+    }
+
+    func addToStack(_ items: [ClipboardItem]) {
+        guard stack.count + items.count <= 100 else { showStatus("Paste Stack can hold up to 100 items."); return }
+        stack.append(contentsOf: items.map(\.metadataOnly))
+    }
+
+    func resetStackTarget() { stackTargetPID = nil; stackTargetName = nil }
+
+    var sources: [(key: String, name: String)] {
+        sourceOptions[mode] ?? []
+    }
 
     var hasUnsavedEditorChanges: Bool { editorDraft != nil && editorDraft != initialEditorDraft }
 
@@ -135,8 +188,20 @@ final class AppState: ObservableObject {
 
     private func criteriaChanged() {
         guard !isSwitchingMode else { return }
+        if PerformanceRecorder.enabled { queryStartedAt = ProcessInfo.processInfo.systemUptime }
         resetSelectionOnResults = true
         requestResults()
+    }
+
+    func recordVisibleResults(window: NSWindow?) {
+        if let start = presentationStartedAt {
+            PerformanceRecorder.record("show", startedAt: start, window: window)
+            presentationStartedAt = nil
+        }
+        if let start = queryStartedAt {
+            PerformanceRecorder.record("query", startedAt: start, window: window)
+            queryStartedAt = nil
+        }
     }
 
     private func requestResults() {
@@ -144,7 +209,7 @@ final class AppState: ObservableObject {
         resultTask?.cancel()
         resultRequest += 1
         let request = resultRequest
-        let input = PanelQuery(mode: mode, query: searchText, filter: selectedFilter, group: selectedGroup,
+        let input = PanelQuery(mode: mode, query: searchText, filter: selectedFilter, group: selectedGroup, source: selectedSource,
                                history: sourceHistory, library: sourceLibrary)
         isUpdatingResults = true
         resultTask = Task { [weak self] in
@@ -153,6 +218,8 @@ final class AppState: ObservableObject {
             guard let self, !Task.isCancelled, request == self.resultRequest else { return }
             self.visibleItems = output.items
             self.filterCounts = output.counts
+            let ids = Set(output.items.map(\.id))
+            self.multiSelection.removeAll { !ids.contains($0) }
             self.normalizeSelection(in: output.items, resetIndex: self.resetSelectionOnResults)
             self.resetSelectionOnResults = false
             self.isUpdatingResults = false
@@ -249,6 +316,7 @@ struct PanelQuery: Sendable {
     let query: String
     let filter: HistoryFilter
     let group: LibraryGroupSelection
+    var source: String? = nil
     let history: [ClipboardItem]
     let library: [LibraryItem]
 
@@ -274,6 +342,7 @@ struct PanelQuery: Sendable {
         var matches: [(ClipboardItem, Int)] = []
         for item in candidates {
             if Task.isCancelled { return .init(items: [], counts: [:]) }
+            guard source == nil || source == item.sourceKey else { continue }
             for type in HistoryFilter.contentFilters where type.matches(item) { counts[type, default: 0] += 1 }
             guard filter.matches(item) else { continue }
             let rank = searchRank(text, item: item)
@@ -302,7 +371,7 @@ struct PanelQuery: Sendable {
         if item.title.compare(query, options: .caseInsensitive) == .orderedSame { return 0 }
         if item.title.lowercased().hasPrefix(query.lowercased()) { return 1 }
         if item.title.localizedCaseInsensitiveContains(query) { return 2 }
-        if item.previewText.localizedCaseInsensitiveContains(query) || (item.sourceAppName?.localizedCaseInsensitiveContains(query) ?? false) { return 3 }
+        if item.previewText.localizedCaseInsensitiveContains(query) || item.recognizedText.localizedCaseInsensitiveContains(query) || (item.sourceAppName?.localizedCaseInsensitiveContains(query) ?? false) { return 3 }
         return nil
     }
 }

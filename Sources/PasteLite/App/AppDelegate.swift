@@ -19,7 +19,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var updateTimer: Timer?
     private var isTerminating = false
     private var isReadyToTerminate = false
-    private var settingsWindow: NSWindow?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -37,6 +36,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             controller?.toggle()
         }
         configureStatusItem(historyStore: historyStore)
+        FolderSyncService.shared.start(store: historyStore)
+        preferences.$localMCPEnabled.removeDuplicates().sink { enabled in
+            if enabled { LocalMCPServer.shared.start(store: historyStore) }
+            else { LocalMCPServer.shared.stop() }
+        }.store(in: &observers)
         if let hotkeyManager {
             hotkeyRegistrationController = HotkeyRegistrationController(settings: hotkeySettings, registrar: hotkeyManager) { [weak self] status in
                 self?.hotkeySettings.updateRegistrationStatus(status)
@@ -91,10 +95,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         guard preferences.clearOnQuit else { return .terminateNow }
         isTerminating = true
+        FolderSyncService.shared.stop()
         clipboardMonitor?.stop()
         Task {
             let result = await AppServices.shared.historyStore.clearIncludingPinned()
             if result.isSuccess {
+                self.preferences.syncFolder = ""
                 self.isReadyToTerminate = true
                 DispatchQueue.main.async { sender.terminate(nil) }
             }
@@ -102,6 +108,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 ReleaseInstaller.cancelPendingInstall()
                 isTerminating = false
                 clipboardMonitor?.start()
+                FolderSyncService.shared.start(store: AppServices.shared.historyStore)
                 let alert = NSAlert()
                 alert.messageText = "Could Not Clear History"
                 alert.informativeText = "PasteLite is still open so you can retry clearing your clipboard history."
@@ -115,6 +122,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        LocalMCPServer.shared.stop()
+        FolderSyncService.shared.stop()
         clipboardMonitor?.stop()
         hotkeyRegistrationController?.stop()
         maintenanceTimer?.invalidate()
@@ -170,16 +179,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func openSettings(page: SettingsPage = .general) {
         popover?.close()
         preferences.settingsPage = page
-        if settingsWindow == nil {
-            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 600, height: 680),
-                                  styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false)
-            window.title = "PasteLite Settings"
-            window.isReleasedWhenClosed = false
-            window.contentView = NSHostingView(rootView: SettingsView())
-            window.center()
-            settingsWindow = window
+        // Menu and Command-comma use the same SwiftUI Settings scene.
+        if #available(macOS 14, *) {
+            SettingsActionRouter.open?()
+        } else {
+            NSApp.sendAction(Selector(("showPreferencesWindow:")), to: nil, from: nil)
         }
-        settingsWindow?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
     }
 }

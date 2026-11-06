@@ -75,6 +75,8 @@ struct ClipboardItem: Identifiable, Hashable, Sendable {
     var storedByteCount: Int = 0
     var origin: ClipboardOrigin = .history
     var contentRevision: Int = 0
+    var recognizedText = ""
+    var hasRecognizedText = false
 
     init(
         id: UUID = UUID(),
@@ -103,6 +105,7 @@ struct ClipboardItem: Identifiable, Hashable, Sendable {
     }
 
     var assetByteCount: Int { hasLoadedAssets ? assets.reduce(0) { $0 + $1.data.count } : storedByteCount }
+    var sourceKey: String { sourceBundleIdentifier ?? sourceAppName ?? "unknown" }
     var isExpired: Bool {
         guard kind == .concealed else { return false }
         return (expiresAt ?? copiedAt.addingTimeInterval(86400)) <= Date()

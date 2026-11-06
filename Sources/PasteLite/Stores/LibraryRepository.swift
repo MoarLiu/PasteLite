@@ -306,7 +306,7 @@ extension HistoryRepository {
         return ClipboardImageProcessor.thumbnail(from: data, maxPixelSize: maxPixelSize)
     }
 
-    private func libraryDatabase() throws -> SQLiteDatabase {
+    func libraryDatabase() throws -> SQLiteDatabase {
         openIfNeeded()
         guard let database else { throw LibraryError.unavailable }
         return database
@@ -378,10 +378,12 @@ extension HistoryRepository {
                 try query.bind(id.uuidString, at: 2)
                 try query.run()
             case .clear:
-                try database.execute("DELETE FROM library_items; DELETE FROM library_groups;")
+                try database.execute("DELETE FROM library_items; DELETE FROM library_groups; DELETE FROM sync_outbox;")
+                try setSyncClearCutoff(database)
             }
             // Read the new state before commit so a failed refresh also rolls back.
             try refreshLibrary(database)
+            try recordSyncChanges(previousItems: previousItems, previousGroups: previousGroups, database: database)
             try database.execute("COMMIT;")
         } catch {
             libraryItems = previousItems
@@ -396,7 +398,7 @@ extension HistoryRepository {
         try query.bind(id.uuidString, at: 1); try query.run()
     }
 
-    private func insertLibrary(_ item: LibraryItem, database: SQLiteDatabase) throws {
+    func insertLibrary(_ item: LibraryItem, database: SQLiteDatabase) throws {
         let query = try database.prepare("""
             INSERT INTO library_items (id, group_id, name, item_type, kind, original_title, preview_text,
               source_app_name, source_bundle_identifier, source_history_id, source_content_hash, content_hash,
@@ -417,6 +419,66 @@ extension HistoryRepository {
             try value.bind(UUID().uuidString, at: 1); try value.bind(item.id.uuidString, at: 2)
             try value.bind(Int64(asset.index), at: 3); try value.bind(asset.pasteboardType.rawValue, at: 4)
             try value.bind(asset.data, at: 5); try value.bind(Int64(asset.data.count), at: 6); try value.run()
+        }
+    }
+
+    func exportLibrary(to url: URL) throws {
+        _ = try libraryDatabase()
+        let loaded = try libraryItems.map { item -> LibraryItem in
+            var value = item
+            value.content = try resolveLibrary(item.displayItem)
+            value.content.title = item.content.title
+            return value
+        }
+        let archive = LibraryArchive(groups: libraryGroups.map { .init(id: $0.id, name: $0.name, createdAt: $0.createdAt) },
+                                     items: loaded.map(LibraryArchive.Entry.init))
+        try archive.write(to: url)
+    }
+
+    func importLibrary(_ archive: LibraryArchive, generation: Int) throws -> LibraryImportResult {
+        let incoming = try archive.validatedItems()
+        guard generation >= libraryGeneration else { throw LibraryError.cleared }
+        let database = try libraryDatabase()
+        let originalItems = libraryItems, originalGroups = libraryGroups
+        var mapping: [UUID: UUID] = [:]
+        var added = 0, skipped = 0
+        try database.execute("BEGIN IMMEDIATE TRANSACTION;")
+        do {
+            for group in archive.groups {
+                let normalizedName = try LibraryValidation.groupName(group.name, existing: [])
+                if let existing = libraryGroups.first(where: { $0.name.caseInsensitiveCompare(normalizedName) == .orderedSame }) {
+                    mapping[group.id] = existing.id
+                    continue
+                }
+                let id = libraryGroups.contains(where: { $0.id == group.id }) ? UUID() : group.id
+                let name = try LibraryValidation.groupName(normalizedName, existing: libraryGroups)
+                let query = try database.prepare("INSERT INTO library_groups (id, name, name_key, created_at, updated_at) VALUES (?, ?, ?, ?, ?);")
+                try query.bind(id.uuidString, at: 1); try query.bind(name, at: 2); try query.bind(name.lowercased(), at: 3)
+                try query.bind(group.createdAt.timeIntervalSince1970, at: 4); try query.bind(group.createdAt.timeIntervalSince1970, at: 5)
+                try query.run()
+                libraryGroups.append(.init(id: id, name: name, createdAt: group.createdAt, updatedAt: group.createdAt))
+                mapping[group.id] = id
+            }
+            for var item in incoming {
+                try Task.checkCancellation()
+                // Preserve existing names, groups, and edits. Conflicting UUIDs
+                // are skipped rather than silently replacing user content.
+                if libraryItems.contains(where: { $0.id == item.id || item.type == .snapshot && $0.type == .snapshot && $0.sourceContentHash == item.sourceContentHash }) {
+                    skipped += 1; continue
+                }
+                item.groupID = item.groupID.flatMap { mapping[$0] }
+                try insertLibrary(item, database: database)
+                libraryItems.append(item.metadataOnly)
+                added += 1
+            }
+            try refreshLibrary(database)
+            try recordSyncChanges(previousItems: originalItems, previousGroups: originalGroups, database: database)
+            try database.execute("COMMIT;")
+            return LibraryImportResult(added: added, skipped: skipped, snapshot: snapshot())
+        } catch {
+            try? database.execute("ROLLBACK;")
+            libraryItems = originalItems; libraryGroups = originalGroups
+            throw error
         }
     }
 }

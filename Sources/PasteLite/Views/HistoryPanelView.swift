@@ -21,8 +21,16 @@ struct HistoryPanelView: View {
     var onMoveSaved: (LibraryItem, UUID?) -> Void = { _, _ in }
     var onClearLibrary: () -> Void = {}
     var onOpenLink: (URL) -> Void = { NSWorkspace.shared.open($0) }
+    var onExport: () -> Void = {}
+    var onImport: () -> Void = {}
+    var onMerge: () -> Void = {}
+    var onStackNext: () -> Void = {}
+    var onStackCancel: () -> Void = {}
+    var onScript: (ClipboardItem) -> Void = { _ in }
+    var onTextToolUse: (String) -> Void = { _ in }
     @FocusState private var searchFocused: Bool
     @State private var scrollProxy: ScrollViewProxy?
+    @Environment(\.colorScheme) private var colorScheme
     private var filteredItems: [ClipboardItem] { appState.visibleItems }
     private var selectedItem: ClipboardItem? { appState.selectedItem(in: filteredItems) }
 
@@ -65,8 +73,8 @@ struct HistoryPanelView: View {
                     Divider()
                     DetailView(item: selectedItem, historyStore: historyStore,
                                onCopy: onCopy, onPin: onPin, onCopyText: onCopyText,
-                               savedItem: selectedSavedItem, onEdit: { if let item = selectedSavedItem { onEditSaved(item) } })
-                        .id(appState.presentationVersion)
+                               savedItem: selectedSavedItem, onEdit: { if let item = selectedSavedItem { onEditSaved(item) } },
+                               presentationVersion: appState.presentationVersion)
                         .frame(width: 880 - PL.Size.listColumnWidth - 1)
                 }
             }
@@ -83,7 +91,7 @@ struct HistoryPanelView: View {
         .onAppear { refreshResults(); searchFocused = true }
         .onChange(of: historyStore.snapshotRevision) { _ in refreshResults() }
         .onChange(of: appState.mode) { _ in searchFocused = true }
-        .onChange(of: appState.presentationVersion) { _ in searchFocused = true; refreshResults() }
+        .onChange(of: appState.presentationVersion) { _ in searchFocused = true }
         .sheet(item: Binding(get: { appState.editorDraft }, set: { value in
             if value == nil { appState.requestEditorDismissal() }
         })) { draft in
@@ -92,18 +100,28 @@ struct HistoryPanelView: View {
         .sheet(item: $appState.groupDraft) { draft in
             LibraryGroupEditorView(store: historyStore, draft: draft) { appState.groupDraft = nil }
         }
+        .sheet(item: $appState.textToolDraft) { draft in
+            TextToolView(draft: draft, onUse: onTextToolUse, onCancel: { appState.textToolDraft = nil })
+        }
     }
 
     private var header: some View {
         VStack(spacing: 0) {
             HStack(spacing: 10) {
-                Picker("View", selection: $appState.mode) {
-                    ForEach(PanelMode.allCases) { Text($0.title).tag($0) }
-                }.pickerStyle(.segmented).labelsHidden().frame(width: 135)
+                HStack(spacing: 3) {
+                    ForEach(PanelMode.allCases) { mode in
+                        Button { appState.mode = mode } label: {
+                            Text(mode.title).font(.system(size: 11.5, weight: appState.mode == mode ? .semibold : .regular))
+                                .foregroundColor(appState.mode == mode ? .primary : .secondary)
+                                .frame(maxWidth: .infinity).padding(.vertical, 6)
+                                .background(appState.mode == mode ? Color(nsColor: .controlBackgroundColor) : .clear, in: RoundedRectangle(cornerRadius: 6))
+                        }.buttonStyle(.plain).accessibilityAddTraits(appState.mode == mode ? [.isSelected] : [])
+                    }
+                }.padding(3).background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 8)).frame(width: 135)
                 Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
                 TextField(appState.mode == .history ? "Search history" : "Search saved items", text: $appState.searchText)
                     .textFieldStyle(.plain).font(PL.Font.search).focused($searchFocused)
-                    .accessibilityLabel("Search clipboard history")
+                    .accessibilityLabel(appState.mode == .history ? "Search clipboard history" : "Search saved items")
                 if !appState.searchText.isEmpty {
                     Button { appState.searchText = "" } label: { Image(systemName: "xmark.circle.fill") }
                         .buttonStyle(.plain).foregroundStyle(.secondary).help("Clear search")
@@ -117,6 +135,7 @@ struct HistoryPanelView: View {
                         Text("Ungrouped").tag(LibraryGroupSelection.ungrouped)
                         ForEach(historyStore.libraryGroups) { Text($0.name).tag(LibraryGroupSelection.group($0.id)) }
                     }.labelsHidden().frame(maxWidth: .infinity, alignment: .leading)
+                        .lineLimit(1).truncationMode(.tail).help(selectedGroup?.name ?? (appState.selectedGroup == .ungrouped ? "Ungrouped" : "All Saved"))
                     Menu {
                         Button("New Group…") { appState.groupDraft = LibraryGroupDraft(group: nil) }
                         if let group = selectedGroup {
@@ -128,6 +147,32 @@ struct HistoryPanelView: View {
                         .disabled(!historyStore.isLibraryAvailable)
                 }.font(.system(size: 12)).padding(.horizontal, 14).padding(.bottom, 8)
             }
+            HStack(spacing: 8) {
+                Picker("Source", selection: $appState.selectedSource) {
+                    Text("All Sources").tag(Optional<String>.none)
+                    ForEach(appState.sources, id: \.key) { source in Text(source.name).tag(Optional(source.key)) }
+                }.frame(maxWidth: 190).help("Filter by the application that copied this content")
+                Button(appState.isSelecting ? "Done" : "Select") { appState.isSelecting.toggle() }
+                Spacer(minLength: 0)
+                Button("Stack \(appState.stack.count)") { appState.stackPresented.toggle() }
+                    .popover(isPresented: $appState.stackPresented) {
+                        PasteStackView(appState: appState, onNext: onStackNext, onCancel: onStackCancel)
+                    }
+            }.font(.system(size: 11)).padding(.horizontal, 14).padding(.bottom, 8)
+            if appState.isSelecting {
+                HStack(spacing: 8) {
+                    Text("\(appState.multiSelection.count) selected").font(.caption)
+                    Picker("Separator", selection: $appState.mergeSeparator) {
+                        Text("Newline").tag("\n")
+                        Text("Blank line").tag("\n\n")
+                        Text("Space").tag(" ")
+                        Text("None").tag("")
+                    }.frame(width: 180)
+                    Spacer(minLength: 0)
+                    Button("Merge", action: onMerge).disabled(appState.multiSelection.isEmpty || appState.isPerformingClipboardAction)
+                    Button("Queue") { appState.addToStack(appState.selectedItems) }.disabled(appState.multiSelection.isEmpty || appState.stackBusy)
+                }.font(.system(size: 11)).padding(.horizontal, 14).padding(.bottom, 8)
+            }
             HStack(spacing: 4) {
                 ForEach(HistoryFilter.contentFilters) { filter in
                     let count = appState.filterCounts[filter] ?? 0
@@ -137,8 +182,9 @@ struct HistoryPanelView: View {
                             Text("\(count)").opacity(appState.selectedFilter == filter ? 1 : 0.65)
                         }
                         .font(.system(size: 11.5)).padding(.horizontal, 9).padding(.vertical, 5)
-                        .foregroundColor(appState.selectedFilter == filter ? preferences.accent.foregroundColor : .secondary)
-                        .background(appState.selectedFilter == filter ? Color.accentColor : .clear, in: Capsule())
+                        .foregroundColor(appState.selectedFilter == filter ? .primary : .secondary)
+                        .background(appState.selectedFilter == filter ? preferences.accent.selectionBackground(for: colorScheme) : .clear, in: Capsule())
+                        .overlay { Capsule().strokeBorder(appState.selectedFilter == filter ? preferences.accent.color.opacity(0.22) : .clear, lineWidth: 1) }
                     }.buttonStyle(.plain).accessibilityLabel("\(filter.title), \(count) items")
                 }
                 Spacer(minLength: 0)
@@ -178,6 +224,14 @@ struct HistoryPanelView: View {
                                     }.font(.system(size: 11.5, weight: .medium)).foregroundStyle(.secondary)
                                         .padding(.horizontal, 8).padding(.top, 12).padding(.bottom, 5)
                                 }
+                                HStack(spacing: 2) {
+                                if appState.isSelecting {
+                                    Button { appState.toggleSelection(item) } label: {
+                                        if let index = appState.multiSelection.firstIndex(of: item.id) {
+                                            Text("\(index + 1)").font(.caption.monospacedDigit()).frame(width: 22)
+                                        } else { Image(systemName: "circle").frame(width: 22) }
+                                    }.buttonStyle(.plain).accessibilityLabel("Select \(item.title)")
+                                }
                                 HistoryRowView(item: item, isSelected: appState.selectedItemID == item.id,
                                                historyStore: historyStore, accent: preferences.accent,
                                                shortcut: index < 9 ? index + 1 : nil,
@@ -185,10 +239,15 @@ struct HistoryPanelView: View {
                                                isSaved: item.origin == .library || historyStore.savedSnapshot(for: item) != nil)
                                     .id(item.id).contentShape(Rectangle())
                                     .onTapGesture(count: 2) { guard !appState.isUpdatingResults else { return }; appState.selectedItemID = item.id; onPaste(item) }
-                                    .onTapGesture { appState.selectedItemID = item.id }
+                                    .onTapGesture { if appState.isSelecting { appState.toggleSelection(item) } else { appState.selectedItemID = item.id } }
                                     .contextMenu { itemActions(item) }
                                     .accessibilityAddTraits(.isButton)
-                                    .accessibilityAction { guard !appState.isUpdatingResults else { return }; appState.selectedItemID = item.id; onPaste(item) }
+                                    .accessibilityAction {
+                                        guard !appState.isUpdatingResults else { return }
+                                        if appState.isSelecting { appState.toggleSelection(item) }
+                                        else { appState.selectedItemID = item.id; onPaste(item) }
+                                    }
+                                }
                             }
                         }.padding(.horizontal, 8).padding(.bottom, 10)
                     }
@@ -200,9 +259,6 @@ struct HistoryPanelView: View {
                     .onChange(of: appState.visibleItems) { _ in
                         DispatchQueue.main.async { scroll(proxy) }
                     }
-                    .onChange(of: appState.searchText) { _ in scroll(proxy) }
-                    .onChange(of: appState.selectedFilter) { _ in scroll(proxy) }
-                    .onChange(of: appState.presentationVersion) { _ in scroll(proxy) }
                 }
             }
         }
@@ -234,9 +290,9 @@ struct HistoryPanelView: View {
             }
             Button { if let item = selectedItem { onPaste(item) } } label: {
                 HStack(spacing: 6) { Text(primaryTitle); Text("↩") }
-                    .font(.system(size: 12.5, weight: .medium)).foregroundColor(preferences.accent.foregroundColor)
+                    .font(.system(size: 12.5, weight: .medium)).foregroundColor(.white)
                     .padding(.horizontal, 13).padding(.vertical, 7)
-                    .background(preferences.accent.color, in: RoundedRectangle(cornerRadius: 8))
+                    .background(preferences.accent.actionColor, in: RoundedRectangle(cornerRadius: 8))
                     .opacity(selectedItem == nil || appState.isPerformingClipboardAction ? 0.45 : 1)
             }
             .buttonStyle(.plain).disabled(selectedItem == nil || appState.isPerformingClipboardAction || appState.isUpdatingResults)
@@ -254,6 +310,8 @@ struct HistoryPanelView: View {
                         Button("Clear History…", action: onClear).foregroundColor(.red).disabled(historyStore.items.allSatisfy(\.isPinned))
                     } else {
                         Button("New Snippet…", action: onNewSnippet).disabled(!historyStore.isLibraryAvailable)
+                        Button("Export Library Backup…") { appState.actionsPresented = false; onExport() }.disabled(!historyStore.isLibraryAvailable)
+                        Button("Import Library Backup…") { appState.actionsPresented = false; onImport() }.disabled(!historyStore.isLibraryAvailable)
                         Button("Clear Saved Library…", action: onClearLibrary).foregroundColor(.red).disabled(historyStore.libraryItems.isEmpty && historyStore.libraryGroups.isEmpty)
                     }
                 }.buttonStyle(.borderless).padding(12).frame(width: 240).accentColor(preferences.accent.color)
@@ -266,6 +324,11 @@ struct HistoryPanelView: View {
     @ViewBuilder private func itemActions(_ item: ClipboardItem) -> some View {
         Button("Copy to Clipboard    ⌘C") { appState.actionsPresented = false; onCopy(item) }
         Button("\(primaryTitle)    ↩") { appState.actionsPresented = false; onPaste(item) }
+        Button("Add to Paste Stack") { appState.actionsPresented = false; appState.addToStack([item]) }.disabled(appState.stackBusy)
+        if item.kind == .image {
+            Button(item.hasRecognizedText ? "Recognize Text Again" : "Recognize Text") { historyStore.recognizeText(in: item, force: true) }
+            if !item.recognizedText.isEmpty { Button("Copy Recognized Text") { onCopyText(item.recognizedText) } }
+        }
         if item.origin == .history, item.kind != .concealed {
             Button(historyStore.savedSnapshot(for: item) == nil ? "Save to Library…    ⇧⌘P" : "Remove from Saved    ⇧⌘P") { appState.actionsPresented = false; onPin(item) }
                 .disabled(!historyStore.isLibraryAvailable)
@@ -278,7 +341,10 @@ struct HistoryPanelView: View {
             }
         }
         if [.text, .code].contains(item.kind) {
-            Button(item.origin == .history ? "Save as Text Snippet…" : "Create Text Snippet…") { appState.actionsPresented = false; onCreateSnippet(item) }
+            Button("Transform with Script…") { appState.actionsPresented = false; onScript(item) }
+            let oversized = item.previewText.utf8.count > LibraryValidation.snippetByteLimit
+            Button(oversized ? "Text Snippet Limit: 1 MiB" : (item.origin == .history ? "Save as Text Snippet…" : "Create Text Snippet…")) { appState.actionsPresented = false; onCreateSnippet(item) }
+                .disabled(oversized || !historyStore.isLibraryAvailable).help("Editable snippets support up to 1 MiB of UTF-8 text. Larger content can be saved in its original format.")
         }
         if item.kind == .link, let url = URL(string: item.previewText), ["https", "http"].contains(url.scheme?.lowercased() ?? "") {
             Button("Open Link") { appState.actionsPresented = false; onOpenLink(url) }
@@ -287,6 +353,7 @@ struct HistoryPanelView: View {
         Button(item.origin == .history ? "Delete from History    ⌘⌫" : "Delete Saved Item    ⌘⌫", role: .destructive) { appState.actionsPresented = false; onRemove(item) }
     }
     private var primaryTitle: String {
+        if appState.isSelecting { return "Copy \(appState.multiSelection.count) Items" }
         if preferences.selectionAction == .copy || !AccessibilityService.isTrusted() || appState.pasteTargetName == nil { return "Copy to Clipboard" }
         if preferences.plainText { return "Paste as Plain Text" }
         return appState.pasteTargetName.map { "Paste to \($0)" } ?? "Paste"

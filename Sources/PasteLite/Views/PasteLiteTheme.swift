@@ -53,6 +53,31 @@ enum PL {
 
         var color: Color { Color(hex: rgbHex) }
 
+        /// A deeper action color keeps white button labels readable without
+        /// turning list selection into a solid brand-colored block.
+        var actionColor: Color {
+            var channels = components
+            while Self.luminance(channels) > (1.05 / 4.8 - 0.05) {
+                channels = channels.map { $0 * 0.95 }
+            }
+            return Color(.sRGB, red: channels[0], green: channels[1], blue: channels[2], opacity: 1)
+        }
+
+        func selectionBackground(for scheme: ColorScheme) -> Color {
+            let base: [Double] = scheme == .dark ? [0.145, 0.165, 0.20] : [0.957, 0.965, 0.980]
+            let amount = scheme == .dark ? 0.14 : 0.075
+            let blended = zip(base, components).map { $0 * (1 - amount) + $1 * amount }
+            return Color(.sRGB, red: blended[0], green: blended[1], blue: blended[2], opacity: 1)
+        }
+
+        private var components: [Double] {
+            [Double((rgbHex >> 16) & 0xFF) / 255, Double((rgbHex >> 8) & 0xFF) / 255, Double(rgbHex & 0xFF) / 255]
+        }
+
+        private static func luminance(_ channels: [Double]) -> Double {
+            0.2126 * linearize(channels[0]) + 0.7152 * linearize(channels[1]) + 0.0722 * linearize(channels[2])
+        }
+
         /// Choose the higher-contrast foreground using the colors actually rendered.
         var foregroundColor: Color {
             let bgLuminance = relativeLuminance
@@ -71,6 +96,12 @@ enum PL {
 
         private static func linearize(_ component: Double) -> Double {
             component <= 0.04045 ? component / 12.92 : pow((component + 0.055) / 1.055, 2.4)
+        }
+    }
+
+    enum Selection {
+        static func secondaryText(for scheme: ColorScheme) -> Color {
+            Color(hex: scheme == .dark ? 0xBDC7D5 : 0x515B69)
         }
     }
 

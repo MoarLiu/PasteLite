@@ -4,6 +4,8 @@ import Combine
 
 @MainActor
 struct SettingsView: View {
+    @ObservedObject private var mcp = LocalMCPServer.shared
+    @ObservedObject private var folderSync = FolderSyncService.shared
     @ObservedObject private var preferences = AppPreferences.shared
     @ObservedObject private var hotkeySettings = HotkeySettingsStore.shared
     @ObservedObject private var historyStore = AppServices.shared.historyStore
@@ -179,6 +181,20 @@ struct SettingsView: View {
                         .disabled(historyStore.libraryItems.isEmpty && historyStore.libraryGroups.isEmpty)
                 }
             }
+            group("Folder Sync") {
+                Text("Sync saved items and groups through a folder you share between Macs. Changes and deletions propagate; concurrent edits use the latest change timestamp with a stable tie-breaker.").font(.caption).foregroundStyle(.secondary)
+                if preferences.syncFolder.isEmpty {
+                    Button("Choose Sync Folder…") { folderSync.chooseFolder(store: historyStore) }
+                } else {
+                    Text(preferences.syncFolder).font(.caption).lineLimit(2).help(preferences.syncFolder)
+                    HStack {
+                        Button(folderSync.busy ? "Syncing…" : "Sync Now") { folderSync.syncNow() }.disabled(folderSync.busy)
+                        Button("Disable Sync") { folderSync.disable(store: historyStore) }
+                    }
+                }
+                Text("Shared JSON files are not encrypted and remain as change history. Clearing all data on quit disables sync and clears this Mac; shared copies remain in the folder.").font(.caption2).foregroundStyle(.secondary)
+                if let message = folderSync.message { Text(message).font(.caption).foregroundStyle(.secondary) }
+            }
             group("Database") {
                 VStack(alignment: .leading, spacing: 12) {
                     Text(PasteLiteDatabasePaths.historyDatabaseURL.path).font(.system(size: 11.5, design: .monospaced)).foregroundStyle(.secondary).textSelection(.enabled)
@@ -194,6 +210,18 @@ struct SettingsView: View {
     }
     private var privacy: some View {
         Group {
+            group("Local MCP") {
+                Toggle("Enable read-only MCP search on this Mac", isOn: $preferences.localMCPEnabled)
+                Text("An authorized local client can read clipboard history and saved text. Concealed items are excluded. No editing, deletion or paste tools are exposed.").font(.caption).foregroundStyle(.secondary)
+                if let endpoint = mcp.endpoint, let token = mcp.token {
+                    Text(endpoint).font(.caption.monospaced()).textSelection(.enabled)
+                    Button("Copy Connection Details") {
+                        _ = PasteService(historyStore: historyStore).copyString("\(endpoint)\nAuthorization: Bearer \(token)")
+                    }
+                    Text("The address and token change when the server restarts.").font(.caption2).foregroundStyle(.secondary)
+                }
+                if let error = mcp.error { Text(error).font(.caption).foregroundColor(.red) }
+            }
             group("Accessibility") {
                 HStack(spacing: 12) {
                     Image(systemName: trusted ? "checkmark.shield.fill" : "hand.raised.fill").font(.system(size: 25)).foregroundColor(trusted ? .green : .orange)

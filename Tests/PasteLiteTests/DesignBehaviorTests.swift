@@ -1,4 +1,5 @@
 import AppKit
+import SwiftUI
 import Testing
 @testable import PasteLite
 
@@ -269,6 +270,28 @@ struct DesignBehaviorTests {
             let levels = [luminance(background), luminance(foreground)].sorted()
             let contrast = (levels[1] + 0.05) / (levels[0] + 0.05)
             #expect(contrast >= 4.5, "\(accent.rawValue) has contrast \(contrast):1")
+        }
+    }
+
+    @Test func selectionAndActionColorsKeepTextReadableInBothThemes() throws {
+        func luminance(_ color: NSColor) -> Double {
+            let color = color.usingColorSpace(.sRGB)!
+            func linear(_ c: Double) -> Double { c <= 0.04045 ? c / 12.92 : pow((c + 0.055) / 1.055, 2.4) }
+            return 0.2126 * linear(color.redComponent) + 0.7152 * linear(color.greenComponent) + 0.0722 * linear(color.blueComponent)
+        }
+        func contrast(_ a: NSColor, _ b: NSColor) -> Double {
+            let levels = [luminance(a), luminance(b)].sorted()
+            return (levels[1] + 0.05) / (levels[0] + 0.05)
+        }
+        for accent in PL.Accent.allCases {
+            let action = try #require(NSColor(accent.actionColor).usingColorSpace(.sRGB))
+            #expect(contrast(action, .white) >= 4.5)
+            for scheme in [ColorScheme.light, .dark] {
+                let surface = try #require(NSColor(accent.selectionBackground(for: scheme)).usingColorSpace(.sRGB))
+                let meta = try #require(NSColor(PL.Selection.secondaryText(for: scheme)).usingColorSpace(.sRGB))
+                #expect(contrast(surface, meta) >= 4.5, "\(accent.rawValue) \(scheme) selection metadata")
+                #expect(contrast(surface, scheme == .dark ? .white : .black) >= 7)
+            }
         }
     }
 

@@ -10,8 +10,10 @@ struct DetailView: View {
     var onCopyText: (String) -> Void = { _ in }
     var savedItem: LibraryItem?
     var onEdit: () -> Void = {}
+    var presentationVersion = 0
     @StateObject private var reveal = ConcealedRevealModel()
     @ObservedObject var preferences = AppPreferences.shared
+    @State private var textPreviewLimit = 4000
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -49,38 +51,58 @@ struct DetailView: View {
                 }.frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }.frame(maxWidth: .infinity, maxHeight: .infinity)
-            .onChange(of: item?.id) { _ in reveal.reset() }
+            .onChange(of: item?.id) { _ in reveal.reset(); textPreviewLimit = 4000 }
+            .onChange(of: presentationVersion) { _ in reveal.reset(); textPreviewLimit = 4000 }
+            .onChange(of: item?.contentRevision) { _ in textPreviewLimit = 4000 }
             .onDisappear { reveal.reset() }
     }
 
     @ViewBuilder private func preview(_ item: ClipboardItem) -> some View {
         switch item.kind {
         case .image:
+            VStack(spacing: 8) {
             ClipboardImageView(item: item, historyStore: historyStore, maxPixelSize: 1600)
                 .padding(20).background(Checkerboard().opacity(0.18)).padding(.horizontal, 20).padding(.bottom, 20)
+            if historyStore.ocrBusyKeys.contains(item.ocrKey) {
+                HStack { ProgressView().controlSize(.small); Text("Recognizing text locally…"); Button("Cancel") { historyStore.cancelRecognition(for: item) } }
+            } else {
+                HStack {
+                    Text("Recognized Text").font(.caption.bold())
+                    Spacer()
+                    Button("Recognize Again") { historyStore.recognizeText(in: item, force: true) }
+                    Button("Copy Text") { onCopyText(item.recognizedText) }.disabled(item.recognizedText.isEmpty)
+                }
+            }
+            if let error = historyStore.ocrErrors[item.ocrKey] { Text(error).font(.caption).foregroundColor(.red) }
+            ScrollView { Text(item.recognizedText.isEmpty ? (item.hasRecognizedText ? "No text found." : "") : item.recognizedText).font(.system(size: 12)).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading) }.frame(maxHeight: 100)
+            }.padding(.horizontal, 20).padding(.bottom, 10)
+                .task(id: item.ocrKey) { historyStore.recognizeText(in: item) }
         case .color:
             ColorDetail(item: item, onCopy: onCopyText).padding(.horizontal, 20).padding(.bottom, 20)
         case .code:
+            let text = String(item.previewText.prefix(textPreviewLimit))
+            let lineCount = text.components(separatedBy: "\n").count
             VStack(spacing: 0) {
               ScrollView([.horizontal, .vertical]) {
                 VStack(alignment: .leading, spacing: 0) {
                     HStack {
-                        Text(CodeDetector.language(for: item.previewText) ?? "Code")
+                        Text(CodeDetector.language(for: text) ?? "Code")
                         Spacer()
-                        Text("\(item.previewText.components(separatedBy: "\n").count) \(item.previewText.contains("\n") ? "lines" : "line")")
+                        Text("\(lineCount) preview \(lineCount > 1 ? "lines" : "line")")
                     }.font(.system(size: 11)).foregroundStyle(.secondary).padding(12)
                     Divider()
                     HStack(alignment: .top, spacing: 12) {
-                        Text((1...max(1, item.previewText.components(separatedBy: "\n").count)).map(String.init).joined(separator: "\n"))
+                        Text((1...max(1, lineCount)).map(String.init).joined(separator: "\n"))
                             .foregroundStyle(.tertiary)
-                        Text(item.previewText).textSelection(.enabled)
+                        Text(text).textSelection(.enabled)
                     }.font(.system(size: 12, design: .monospaced)).lineSpacing(5).padding(14)
                 }.frame(minWidth: 470, alignment: .leading)
               }
-                .frame(height: min(224, CGFloat(item.previewText.components(separatedBy: "\n").count) * 20 + 54))
+                .frame(height: min(224, CGFloat(lineCount) * 20 + 54))
                 .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 10))
                 .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Color.primary.opacity(0.08)))
               Spacer(minLength: 0)
+              if item.previewText.count > textPreviewLimit { moreTextControl(item) }
             }.padding(.horizontal, 20).padding(.bottom, 20)
         case .link:
             ScrollView {
@@ -134,10 +156,20 @@ struct DetailView: View {
             }
         case .text:
             ScrollView {
-                Text(item.previewText.isEmpty ? item.title : item.previewText)
+                VStack(alignment: .leading, spacing: 10) {
+                Text(item.previewText.isEmpty ? item.title : String(item.previewText.prefix(textPreviewLimit)))
                     .font(.system(size: 14)).lineSpacing(7).textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 20).padding(.bottom, 20)
+                if item.previewText.count > textPreviewLimit { moreTextControl(item).padding(.horizontal, 20) }
+                }
             }
+        }
+    }
+    private func moreTextControl(_ item: ClipboardItem) -> some View {
+        HStack {
+            Text("Showing \(textPreviewLimit.formatted()) characters. Copy uses the full content.").font(.caption).foregroundStyle(.secondary)
+            Spacer()
+            Button("Show More") { textPreviewLimit = min(item.previewText.count, textPreviewLimit + 16000) }.font(.caption)
         }
     }
     private func infoRow(_ label: String, _ value: String, icon: NSImage? = nil) -> some View {
@@ -149,7 +181,7 @@ struct DetailView: View {
         }
     }
     private func typeTitle(_ item: ClipboardItem) -> String {
-        if item.kind == .code { return "CODE · \((CodeDetector.language(for: item.previewText) ?? "Code").uppercased())" }
+        if item.kind == .code { return "CODE · \((CodeDetector.language(for: String(item.previewText.prefix(16000))) ?? "Code").uppercased())" }
         return item.kind.title.uppercased()
     }
     private func sizeDescription(_ item: ClipboardItem) -> String {

@@ -9,6 +9,9 @@ struct HistoryRowView: View {
     var shortcut: Int? = nil
     var query = ""
     var isSaved = false
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.colorSchemeContrast) private var accessibilityContrast
+    @State private var isHovered = false
 
     var body: some View {
         HStack(spacing: 10) {
@@ -26,19 +29,29 @@ struct HistoryRowView: View {
                     Text(ClipboardTime.relative(item.copiedAt))
                 }
                 .font(.system(size: 11.5))
-                .foregroundColor(isSelected ? accent.foregroundColor : .secondary)
+                .foregroundColor(isSelected ? PL.Selection.secondaryText(for: colorScheme) : .secondary)
                 .lineLimit(1)
             }
             Spacer(minLength: 2)
             VStack(alignment: .trailing, spacing: 3) {
                 if let shortcut { Text("⌘\(shortcut)").font(.system(size: 11)) }
-                if isSaved || item.isPinned { Image(systemName: isSaved ? "star.fill" : "pin.fill").font(.system(size: 10)) }
-            }.foregroundColor(isSelected ? accent.foregroundColor : .secondary)
+                if isSaved || item.isPinned { Image(systemName: isSaved ? "star.fill" : "pin.fill").font(.system(size: 10)).foregroundColor(isSelected ? accent.color : .secondary) }
+            }.foregroundColor(isSelected ? PL.Selection.secondaryText(for: colorScheme) : .secondary)
         }
-        .foregroundColor(isSelected ? accent.foregroundColor : .primary)
-        .padding(.horizontal, 8).padding(.vertical, 7)
+        .foregroundColor(.primary)
+        .padding(.horizontal, 10).padding(.vertical, 8)
         .frame(minHeight: 50)
-        .background(isSelected ? accent.color : .clear, in: RoundedRectangle(cornerRadius: PL.Radius.row))
+        .background(isSelected ? accent.selectionBackground(for: colorScheme) : (isHovered ? Color.primary.opacity(0.035) : .clear), in: RoundedRectangle(cornerRadius: PL.Radius.row))
+        .overlay {
+            if isSelected {
+                RoundedRectangle(cornerRadius: PL.Radius.row)
+                    .strokeBorder(accent.color.opacity(accessibilityContrast == .increased ? 0.7 : 0.24), lineWidth: 1)
+            }
+        }
+        .overlay(alignment: .leading) {
+            if isSelected { Capsule().fill(accent.color).frame(width: 3, height: 26).padding(.leading, 1) }
+        }
+        .onHover { isHovered = $0 }
         .accessibilityElement(children: .combine)
         .accessibilityAddTraits(isSelected ? [.isSelected] : [])
     }
@@ -51,9 +64,9 @@ struct HistoryRowView: View {
         } else {
             Image(systemName: item.kind.symbol)
                 .font(.system(size: 17))
-                .foregroundColor(isSelected ? accent.foregroundColor : tint)
+                .foregroundColor(tint)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background(isSelected ? .white.opacity(0.2) : tint.opacity(0.1))
+                .background(tint.opacity(0.1))
         }
     }
     private var tint: Color {

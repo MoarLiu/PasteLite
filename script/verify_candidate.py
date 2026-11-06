@@ -25,7 +25,7 @@ def storage_ready(database):
         with sqlite3.connect(database, timeout=0.2) as connection:
             if connection.execute("PRAGMA user_version").fetchone()[0] != 4:
                 return False
-            tables = ["history_items", "history_assets", "library_items", "library_assets", "library_groups"]
+            tables = ["history_items", "history_assets", "library_items", "library_assets", "library_groups", "recognized_text", "sync_outbox", "sync_received", "sync_versions", "sync_settings", "sync_snapshot_deletions"]
             return all(connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0 for table in tables)
     except sqlite3.Error:
         return False
@@ -82,7 +82,7 @@ def verify(artifacts, arch, version, build):
                             raise RuntimeError(f"Candidate startup did not finish: {log_path.read_text(errors='replace')}")
                         result.update(bundle=f"{version} ({build})", minimum_os="12.0", signature="verified",
                                       mounted_launch="passed; schema 4 and empty isolated storage verified",
-                                      runtime="native Apple Silicon" if arch == "arm64" else "Rosetta on Apple Silicon")
+                                      runtime="native Apple Silicon")
                     finally:
                         process.terminate()
                         try:
@@ -104,12 +104,12 @@ def verify(artifacts, arch, version, build):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("directory", type=pathlib.Path)
-    parser.add_argument("--version", default="0.4.0")
-    parser.add_argument("--build", default="40")
+    parser.add_argument("--version", default="0.4.1")
+    parser.add_argument("--build", default="41")
     parser.add_argument("--output", type=pathlib.Path)
     arguments = parser.parse_args()
     results = []
-    for architecture in ["arm64", "x86_64"]:
+    for architecture in ["arm64"]:
         result = verify(arguments.directory.resolve(), architecture, arguments.version, arguments.build)
         results.append(result)
         print(json.dumps(result, ensure_ascii=False), flush=True)

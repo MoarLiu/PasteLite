@@ -39,10 +39,18 @@ struct AppIconView: View {
 @MainActor
 enum SourceAppIcon {
     private static let cache = NSCache<NSString, NSImage>()
+    private static var missingUntil: [String: TimeInterval] = [:]
     static func image(for identifier: String?) -> NSImage? {
         guard let identifier else { return nil }
         if let image = cache.object(forKey: identifier as NSString) { return image }
-        guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: identifier) else { return nil }
+        let now = ProcessInfo.processInfo.systemUptime
+        if let expiry = missingUntil[identifier], expiry > now { return nil }
+        guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: identifier) else {
+            if missingUntil.count >= 256 { missingUntil = missingUntil.filter { $0.value > now }; if missingUntil.count >= 256 { missingUntil.removeAll() } }
+            missingUntil[identifier] = now + 60
+            return nil
+        }
+        missingUntil[identifier] = nil
         let image = NSWorkspace.shared.icon(forFile: url.path)
         cache.setObject(image, forKey: identifier as NSString)
         return image

@@ -118,11 +118,7 @@ enum ReleaseInstaller {
         var errorDescription: String? { if case let .invalid(message) = self { return message }; return nil }
     }
     static func stage(_ release: InstallableRelease) async throws -> URL {
-        #if arch(arm64)
         let arch = "arm64"
-        #else
-        let arch = "x86_64"
-        #endif
         guard let zip = release.assets?.first(where: { $0.name.hasSuffix("-macos-\(arch).app.zip") }),
               let checksum = release.assets?.first(where: { $0.name == zip.name + ".sha256" }),
               [zip, checksum].allSatisfy({
@@ -232,11 +228,7 @@ enum ReleaseInstaller {
     }
 
     static var architecture: String {
-        #if arch(arm64)
         return "arm64"
-        #else
-        return "x86_64"
-        #endif
     }
 
     private static func normalizedVersion(_ value: String) -> String {

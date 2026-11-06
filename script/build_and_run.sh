@@ -9,11 +9,16 @@ fi
 MODE="${1:-run}"
 APP_NAME="PasteLite"
 BUNDLE_ID="${BUNDLE_ID:-com.xia.PasteLite}"
-APP_VERSION="${APP_VERSION:-0.4.0}"
-APP_BUILD="${APP_BUILD:-40}"
+APP_VERSION="${APP_VERSION:-0.4.1}"
+APP_BUILD="${APP_BUILD:-41}"
 PASTELITE_UPDATE_CHECK_URL="${PASTELITE_UPDATE_CHECK_URL:-https://api.github.com/repos/MoarLiu/PasteLite/releases/latest}"
 MIN_SYSTEM_VERSION="12.0"
 CONFIGURATION="${CONFIGURATION:-debug}"
+SWIFT_BUILD_TRIPLE="${SWIFT_BUILD_TRIPLE:-arm64-apple-macosx12.0}"
+if [[ "$SWIFT_BUILD_TRIPLE" != arm64-apple-macosx* ]]; then
+  echo "PasteLite 0.4.1 and later support arm64 builds only." >&2
+  exit 2
+fi
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DIST_DIR="${DIST_DIR:-$ROOT_DIR/dist}"

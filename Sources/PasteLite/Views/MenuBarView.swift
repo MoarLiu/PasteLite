@@ -57,6 +57,9 @@ struct MenuBarView: View {
         .padding(5).frame(width: 312)
         .background(VisualEffect(material: .menu))
         .accentColor(preferences.accent.color)
+        .background {
+            if #available(macOS 14, *) { SettingsActionBridge() }
+        }
     }
     private func menuButton(_ title: String, symbol: String, shortcut: String? = nil, action: @escaping () -> Void) -> some View {
         Button(action: action) {

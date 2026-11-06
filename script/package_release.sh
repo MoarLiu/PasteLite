@@ -3,10 +3,14 @@ set -euo pipefail
 export COPYFILE_DISABLE=1
 
 APP_NAME="PasteLite"
-APP_VERSION="${APP_VERSION:-0.4.0}"
-APP_BUILD="${APP_BUILD:-40}"
+APP_VERSION="${APP_VERSION:-0.4.1}"
+APP_BUILD="${APP_BUILD:-41}"
 CONFIGURATION="${CONFIGURATION:-release}"
-ARCHES="${ARCHES:-arm64 x86_64}"
+ARCHES="${ARCHES:-arm64}"
+if [[ "$ARCHES" != "arm64" ]]; then
+  echo "PasteLite 0.4.1 and later release arm64 only." >&2
+  exit 2
+fi
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DIST_DIR="${DIST_DIR:-$ROOT_DIR/dist}"
@@ -24,9 +28,6 @@ triple_for_arch() {
   case "$1" in
     arm64)
       echo "arm64-apple-macosx12.0"
-      ;;
-    x86_64)
-      echo "x86_64-apple-macosx12.0"
       ;;
     *)
       echo "unsupported arch: $1" >&2
