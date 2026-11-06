@@ -1,8 +1,8 @@
 # Changelog
 
-## 0.4.0 — local release candidate
+## 0.4.0 - 2026-11-07
 
-Version 0.4.0 (build 40). Not yet published.
+Version 0.4.0 (build 40).
 
 - Added an independent saved library for original clipboard content and editable text/code snippets.
 - Added custom groups, user-defined names, group/type filtering, and name-prioritized search.

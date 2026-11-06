@@ -31,18 +31,17 @@ SwiftUI, AppKit, and SQLite.
 
 ## Downloads
 
-Download [PasteLite 0.3.2](https://github.com/MoarLiu/PasteLite/releases/tag/v0.3.2):
+Download [PasteLite 0.4.0](https://github.com/MoarLiu/PasteLite/releases/tag/v0.4.0):
 
-- [Apple Silicon DMG](https://github.com/MoarLiu/PasteLite/releases/download/v0.3.2/PasteLite-0.3.2-macos-arm64.dmg)
-- [Intel DMG](https://github.com/MoarLiu/PasteLite/releases/download/v0.3.2/PasteLite-0.3.2-macos-x86_64.dmg)
+- [Apple Silicon DMG](https://github.com/MoarLiu/PasteLite/releases/download/v0.4.0/PasteLite-0.4.0-macos-arm64.dmg)
+- [Intel DMG](https://github.com/MoarLiu/PasteLite/releases/download/v0.4.0/PasteLite-0.4.0-macos-x86_64.dmg)
 
 The release is ad-hoc signed and not notarized. If Gatekeeper blocks the first
 launch, use System Settings → Privacy & Security → Open Anyway.
 
 ## Development
 
-Current development version: **0.4.0 (build 40), local release candidate**.
-The published download links above remain on 0.3.2.
+Current version: **0.4.0 (build 40)**.
 
 In 0.4.0, choose **Saved** in the history panel to organize reusable content.
 Use **Save to Library** to retain original formats, or **Save as Text Snippet**
@@ -56,7 +55,7 @@ saved library; clearing all data on quit includes saved items, snippets, and
 groups. Saved file references require the original files to remain available.
 
 See [0.4.0 development plan](docs/plan-0.4.0.md) and
-[candidate acceptance](docs/acceptance-0.4.0.md) for scope and verification.
+[release verification](docs/acceptance-0.4.0.md) for scope and verification.
 
 Build and test scripts prefer the full Xcode installation at `/Applications/Xcode.app`.
 Set `DEVELOPER_DIR` explicitly to use another toolchain.

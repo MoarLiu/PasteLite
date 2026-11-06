@@ -30,6 +30,9 @@ jobs:
         # AppKit tests share process-wide application and focus state.
         run: ./script/run_checks.sh --no-parallel -Xswiftc -strict-concurrency=complete -Xswiftc -warnings-as-errors
 
+      - name: Run Release tests
+        run: ./script/run_checks.sh -c release --no-parallel -Xswiftc -strict-concurrency=complete -Xswiftc -warnings-as-errors
+
       - name: Verify clear on repeated quit
         run: |
           CONFIGURATION=debug BUNDLE_ID=com.xia.PasteLite.review \
@@ -60,6 +63,7 @@ jobs:
             if [[ "$arch" == "x86_64" ]]; then
               suite="PasteLite.CISmoke.$GITHUB_RUN_ID"
               defaults write "$suite" design.automaticUpdates -bool false
+              defaults write "$suite" design.recordingPaused -bool true
               PASTELITE_DATA_DIRECTORY="$RUNNER_TEMP/PasteLite-smoke" \
                 PASTELITE_PREFERENCES_SUITE="$suite" "$app/Contents/MacOS/PasteLite" &
               app_pid=$!
@@ -69,7 +73,7 @@ jobs:
               wait "$app_pid" || true
               defaults delete "$suite"
               PASTELITE_UPDATE_TEST_APP="$PWD/$app" \
-                ./script/run_checks.sh --filter UpdateInstallationTests
+                ./script/run_checks.sh --no-parallel --filter UpdateInstallationTests
             fi
 
             mkdir -p "$mount_dir"
