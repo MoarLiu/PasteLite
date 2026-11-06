@@ -195,8 +195,9 @@
 - 应用、打包脚本、CI 与版本测试统一为 **0.3.2 / build 32**。
 - `SourceAppIcon` 缓存隔离到主线程；链接预览通过私有副本一次性交给主线程，避免跨执行上下文共享可变元数据，并保留图片提供者。
 - 可控到期时钟使用 actor 隔离；Release 测试不再引用仅在 Debug 编译的预览 fixture。
-- SQLite 事务编排和迁移都在 `HistoryRepository` actor 内执行，低层连接不再接收捕获 actor 私有状态的闭包；事务的提交与回滚规则保持一致。
+- SQLite 的四处事务与迁移均在 `HistoryRepository` actor 内直接执行 BEGIN/COMMIT/ROLLBACK，不再通过事务回调捕获私有连接；保留失败回滚和提交后更新内存快照的规则。
 - Debug、Release 全量测试均通过完整严格并发检查和 warnings-as-errors；CI 同步启用该检查。
+- CI 串行运行共享 AppKit 全局状态的测试，避免不同套件争用应用与焦点状态；用例内部的显式并发验证保留。
 - 开发工具记录和生成物排除出源码提交；公开验收文档移除本地工作目录与临时日志路径。
 - 安装包、校验和及兼容性说明见 `docs/releases/0.3.2.md`。
 

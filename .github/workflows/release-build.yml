@@ -27,7 +27,8 @@ jobs:
           swift --version
 
       - name: Run tests
-        run: ./script/run_checks.sh -Xswiftc -strict-concurrency=complete -Xswiftc -warnings-as-errors
+        # AppKit tests share process-wide application and focus state.
+        run: ./script/run_checks.sh --no-parallel -Xswiftc -strict-concurrency=complete -Xswiftc -warnings-as-errors
 
       - name: Verify clear on repeated quit
         run: |

@@ -94,7 +94,8 @@ actor HistoryRepository {
         if let database {
             do {
                 var updatedItems: [ClipboardItem] = []
-                try withTransaction(database: database) {
+                try database.execute("BEGIN IMMEDIATE TRANSACTION;")
+                do {
                     try expireSensitive(database: database)
                     let existing = try database.prepare("SELECT is_pinned, use_count FROM history_items WHERE content_hash = ?;")
                     try existing.bind(item.contentHash, at: 1)
@@ -106,6 +107,10 @@ actor HistoryRepository {
                     try insert(item, database: database)
                     try pruneHistory(database: database)
                     updatedItems = try fetchRecentItems(limit: limit, database: database)
+                    try database.execute("COMMIT;")
+                } catch {
+                    try? database.execute("ROLLBACK;")
+                    throw error
                 }
                 items = updatedItems
             } catch {
@@ -198,13 +203,18 @@ actor HistoryRepository {
         if let database {
             do {
                 var updated: [ClipboardItem] = []
-                try withTransaction(database: database) {
+                try database.execute("BEGIN IMMEDIATE TRANSACTION;")
+                do {
                     let statement = try database.prepare("UPDATE history_items SET is_pinned = ? WHERE id = ?;")
                     try statement.bind(Int64(pinned ? 1 : 0), at: 1)
                     try statement.bind(id.uuidString, at: 2)
                     try statement.run()
                     try pruneHistory(database: database)
                     updated = try fetchRecentItems(limit: limit, database: database)
+                    try database.execute("COMMIT;")
+                } catch {
+                    try? database.execute("ROLLBACK;")
+                    throw error
                 }
                 items = updated
             } catch { return failure(error, message: "Could not update this pin.") }
@@ -222,12 +232,17 @@ actor HistoryRepository {
         if let database {
             do {
                 var updatedItems: [ClipboardItem] = []
-                try withTransaction(database: database) {
+                try database.execute("BEGIN IMMEDIATE TRANSACTION;")
+                do {
                     let statement = try database.prepare("UPDATE history_items SET copied_at = ?, use_count = use_count + 1 WHERE id = ?;")
                     try statement.bind(copiedAt.timeIntervalSince1970, at: 1)
                     try statement.bind(id.uuidString, at: 2)
                     try statement.run()
                     updatedItems = try fetchRecentItems(limit: limit, database: database)
+                    try database.execute("COMMIT;")
+                } catch {
+                    try? database.execute("ROLLBACK;")
+                    throw error
                 }
                 items = updatedItems
             } catch { return failure(error, message: "Could not update this clipboard item's recent use.") }
@@ -321,19 +336,6 @@ actor HistoryRepository {
         return HistoryMutation(result: .failure(message), snapshot: snapshot())
     }
 
-    // Keep transaction orchestration and callbacks on this actor. The low-level
-    // connection never receives a closure capturing actor-owned state.
-    private func withTransaction(database: SQLiteDatabase, _ body: () throws -> Void) throws {
-        try database.execute("BEGIN IMMEDIATE TRANSACTION;")
-        do {
-            try body()
-            try database.execute("COMMIT;")
-        } catch {
-            try? database.execute("ROLLBACK;")
-            throw error
-        }
-    }
-
     private func migrate(_ database: SQLiteDatabase) throws {
         try database.execute(
             """
@@ -372,12 +374,17 @@ actor HistoryRepository {
         let columns = try database.prepare("PRAGMA table_info(history_items);")
         var names = Set<String>()
         while try columns.step() { if let name = columns.columnString(at: 1) { names.insert(name) } }
-        try withTransaction(database: database) {
+        try database.execute("BEGIN IMMEDIATE TRANSACTION;")
+        do {
             if !names.contains("is_pinned") { try database.execute("ALTER TABLE history_items ADD COLUMN is_pinned INTEGER NOT NULL DEFAULT 0;") }
             if !names.contains("use_count") { try database.execute("ALTER TABLE history_items ADD COLUMN use_count INTEGER NOT NULL DEFAULT 0;") }
             if !names.contains("expires_at") { try database.execute("ALTER TABLE history_items ADD COLUMN expires_at REAL;") }
             try database.execute("UPDATE history_items SET expires_at = copied_at + 86400 WHERE kind = 'concealed' AND expires_at IS NULL;")
             try database.execute("PRAGMA user_version = 3;")
+            try database.execute("COMMIT;")
+        } catch {
+            try? database.execute("ROLLBACK;")
+            throw error
         }
     }
 

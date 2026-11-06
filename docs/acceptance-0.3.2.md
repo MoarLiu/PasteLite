@@ -30,7 +30,7 @@
 
 封版阶段还修正了源应用图标缓存、链接预览元数据交接、可控测试时钟的隔离方式，以及 Release 测试对 Debug fixture 的引用。新增预览快照测试，确认原元数据修改不会影响 UI 副本，且图片载荷保留。预览导出套件仅参与 Debug 编译，因此两种配置的测试数相差一个。
 
-SQLite 的事务编排、闭包与迁移统一在 `HistoryRepository` actor 内执行，避免把捕获 actor 私有状态的闭包传给低层连接。native SwiftPM 验证覆盖事务提交、回滚和并发历史行为。
+SQLite 的四处事务与迁移统一在 `HistoryRepository` actor 内直接执行 BEGIN/COMMIT/ROLLBACK，不再通过回调捕获私有数据库连接。native SwiftPM 验证覆盖事务提交、回滚和并发历史行为。
 
 双架构 Release 安装包已完成挂载、签名、版本、最低系统版本、归档内容与 SHA-256 检查；从两张 DMG 复制的应用均通过隔离启动，Intel 包通过 Rosetta 运行。正式包更新暂存与安装成功/回滚测试通过；隔离 Debug 应用的重复退出与历史清理验证通过。安装包校验和见 `docs/releases/0.3.2.md`。
 
@@ -123,5 +123,5 @@ review_directory="$(mktemp -d)"
 PASTELITE_DATA_DIRECTORY="$review_directory/data" \
 PASTELITE_PREFERENCES_SUITE=PasteLite.ReleaseVerification \
 SWIFT_TEST_SCRATCH_PATH="$review_directory/build" \
-./script/run_checks.sh -Xswiftc -strict-concurrency=complete -Xswiftc -warnings-as-errors
+./script/run_checks.sh --no-parallel -Xswiftc -strict-concurrency=complete -Xswiftc -warnings-as-errors
 ```
