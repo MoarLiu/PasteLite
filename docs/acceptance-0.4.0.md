@@ -66,6 +66,8 @@
 
 这里测量的是筛选、排序及计数计算，**不包括**窗口展示、SwiftUI 绘制和键盘输入送达时间。计划中的热呼出 p95 ≤200 ms、输入至可见结果 p95 ≤150 ms 尚未完成端到端测量。
 
+GitHub 共享 Intel runner 的 Debug 测量曾为 217.79 ms，不与上述参考机器的 Release 数值直接比较。常规 CI 验证两组查询的准确结果数并记录耗时；只有设置 `PASTELITE_QUERY_P95_BUDGET_MS` 时才执行对应环境的耗时预算断言。
+
 ## 候选包
 
 正式发布包输出在本地 `dist/0.4.0-release/release/`，包含 arm64 和 x86_64 的 `.dmg`、`.app.zip` 与 SHA-256 文件。两种 Release 构建、架构检查、签名、plist、最低系统版本及镜像内部校验通过。
@@ -119,6 +121,10 @@ PASTELITE_UPDATE_TEST_APP="$PWD/dist/0.4.0-release/release/stage-arm64/PasteLite
 ./script/run_checks.sh --no-parallel --filter UpdateInstallationTests
 
 python3 script/review_runtime.py dist/0.4.0-preview/PasteLite.app
+
+PASTELITE_QUERY_P95_BUDGET_MS=150 \
+./script/run_checks.sh -c release --no-parallel \
+  --filter LibraryBehaviorTests.queryTimingWithFiveThousandHistoryItems
 ```
 
 最后一条需要使用带 `--ui-preview` 支持的 Debug app；Release 中不包含示例数据和退出测试入口。
