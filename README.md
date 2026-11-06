@@ -8,7 +8,10 @@ SwiftUI, AppKit, and SQLite.
 - Clipboard history for text, code, links, colors, images, and files.
 - Searchable floating history panel with type filters, source app information,
   content previews, light/dark themes, and a compact mode.
-- Pinned items, per-item usage counts, and five-second delete undo.
+- A saved library with named content snapshots, custom groups, and editable text/code snippets.
+- Saved content keeps its original clipboard formats independently of history cleanup.
+- Search names, content, paths, and source apps; combine group and type filters.
+- Per-item usage counts and five-second delete undo for history and saved items.
 - Return performs the configured paste or copy action; Option-Return reverses
   the plain-text preference. Command-C copies without closing history.
 - Paste selected history items into the previous app when Accessibility
@@ -38,7 +41,22 @@ launch, use System Settings → Privacy & Security → Open Anyway.
 
 ## Development
 
-Current version: **0.3.2 (build 32)**.
+Current development version: **0.4.0 (build 40), local release candidate**.
+The published download links above remain on 0.3.2.
+
+In 0.4.0, choose **Saved** in the history panel to organize reusable content.
+Use **Save to Library** to retain original formats, or **Save as Text Snippet**
+to create an editable plain-text copy. **Control-Tab** switches between History
+and Saved; **Command-N** creates a snippet in Saved and **Command-E** edits a
+selected snippet. **Command-Return** saves the editor.
+
+Existing ordinary pins migrate to Ungrouped saved items. Concealed legacy pins
+remain protected history with their existing expiry. Clearing history keeps the
+saved library; clearing all data on quit includes saved items, snippets, and
+groups. Saved file references require the original files to remain available.
+
+See [0.4.0 development plan](docs/plan-0.4.0.md) and
+[candidate acceptance](docs/acceptance-0.4.0.md) for scope and verification.
 
 Build and test scripts prefer the full Xcode installation at `/Applications/Xcode.app`.
 Set `DEVELOPER_DIR` explicitly to use another toolchain.

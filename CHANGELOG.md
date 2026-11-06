@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.4.0 — local release candidate
+
+Version 0.4.0 (build 40). Not yet published.
+
+- Added an independent saved library for original clipboard content and editable text/code snippets.
+- Added custom groups, user-defined names, group/type filtering, and name-prioritized search.
+- Added a snippet editor with native multiline input, draft-preserving save retries, and unsaved-change handling.
+- Added History/Saved switching with Control-Tab, Command-N for new snippets, and Command-E for snippet editing.
+- Migrate ordinary legacy pins to Ungrouped saved items while preserving their original formats and usage counts.
+- Keep saved content independent of history deletion, pruning, and recapture; retain existing concealed-pin expiry rules.
+- Extend five-second delete undo to saved content and keep clear-on-quit transactional across history, saved items, attachments, and groups.
+- Prevent cleared or stale saved content from being pasted, and report unavailable saved file references.
+- Compute panel search/filter results off the main actor and share them with keyboard actions.
+
+Upgrade notes: saved file entries retain references to their original files.
+Text snippets save plain text and preserve their source history. Clear History
+keeps saved content; Clear All Data on Quit includes the saved library.
+Manual cross-app, complete VoiceOver, macOS 12, and physical Intel acceptance
+remain pending. See `docs/acceptance-0.4.0.md`.
+
 ## 0.3.2 - 2026-11-06
 
 Version 0.3.2 (build 32).
