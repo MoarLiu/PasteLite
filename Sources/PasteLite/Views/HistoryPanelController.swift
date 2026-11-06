@@ -14,7 +14,6 @@ final class HistoryPanelController: NSWindowController {
     private let preferences = AppPreferences.shared
     private var preferenceObserver: AnyCancellable?
     private var actionsObserver: AnyCancellable?
-    private var hud: NSPanel?
 
     private var currentItems: [ClipboardItem] {
         appState.filteredItems(in: historyStore.items)
@@ -61,7 +60,7 @@ final class HistoryPanelController: NSWindowController {
                 onUndo: { [weak self] in self?.undoDelete() },
                 onCopyText: { [weak self] text in
                     guard let self else { return }
-                    self.appState.apply(self.pasteService.copyString(text), successMessage: "Copied to clipboard.")
+                    self.appState.apply(self.pasteService.copyString(text))
                 }
             )
         )
@@ -156,8 +155,9 @@ final class HistoryPanelController: NSWindowController {
             guard let self else { return }
             let result = await self.pasteService.copyToClipboard(item, plainText: plainText)
             guard self.finishClipboardAction(id: id) else { return }
-            self.appState.apply(result, successMessage: "Copied to clipboard.")
-            if result.isSuccess, dismissOnSuccess { self.hidePanel(); self.showHUD("Copied to Clipboard", symbol: "doc.on.doc") }
+            if result.isSuccess { await self.historyStore.recordUse(item) }
+            self.appState.apply(result)
+            if result.isSuccess, dismissOnSuccess { self.hidePanel() }
         }
     }
 
@@ -179,37 +179,12 @@ final class HistoryPanelController: NSWindowController {
             guard self.finishClipboardAction(id: id) else { return }
             if result.isSuccess {
                 await self.historyStore.recordUse(item)
-                self.showHUD(plainText ? "Pasted as Plain Text" : "Pasted to \(target?.localizedName ?? "App")", symbol: "checkmark")
+                self.appState.clearStatus()
             } else {
-                self.appState.apply(result, successMessage: "")
+                self.appState.apply(result)
                 self.window?.orderFrontRegardless()
                 self.window?.makeKey()
             }
-        }
-    }
-
-    private func showHUD(_ message: String, symbol: String) {
-        hud?.orderOut(nil)
-        let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 260, height: 84),
-                            styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
-        panel.level = .statusBar
-        panel.backgroundColor = .clear
-        panel.isOpaque = false
-        panel.hasShadow = true
-        panel.ignoresMouseEvents = true
-        panel.contentView = NSHostingView(rootView:
-            HStack(spacing: 12) {
-                Image(systemName: symbol).font(.system(size: 23, weight: .medium))
-                Text(message).font(.system(size: 13, weight: .medium))
-            }.frame(width: 260, height: 84).background(.ultraThinMaterial)
-                .clipShape(RoundedRectangle(cornerRadius: 18)))
-        panel.center()
-        panel.orderFrontRegardless()
-        hud = panel
-        Task { [weak self, weak panel] in
-            try? await Task.sleep(nanoseconds: 1_700_000_000)
-            panel?.orderOut(nil)
-            if self?.hud === panel { self?.hud = nil }
         }
     }
 
@@ -399,11 +374,10 @@ final class HistoryPanelController: NSWindowController {
 }
 
 private extension AppState {
-    func apply(_ result: PasteServiceResult, successMessage: String) {
+    func apply(_ result: PasteServiceResult) {
         switch result {
         case .success:
-            guard !successMessage.isEmpty else { return }
-            showStatus(successMessage)
+            clearStatus()
         case let .failure(message):
             showStatus(message)
         }

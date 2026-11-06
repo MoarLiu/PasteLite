@@ -57,7 +57,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         updateTimer = Timer.scheduledTimer(withTimeInterval: 6 * 3600, repeats: true) { _ in
             Task { @MainActor in
-                if AppPreferences.shared.automaticUpdates { await UpdateModel.shared.check() }
+                if AppPreferences.shared.automaticUpdates { await UpdateModel.shared.check(trigger: .automatic) }
             }
         }
         #if DEBUG
@@ -78,7 +78,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         clipboardMonitor?.start()
         if ProcessInfo.processInfo.arguments.contains("--show-history") { controller.toggle() }
         Task {
-            if preferences.automaticUpdates { await UpdateModel.shared.check() }
+            if preferences.automaticUpdates { await UpdateModel.shared.check(trigger: .automatic) }
         }
     }
 

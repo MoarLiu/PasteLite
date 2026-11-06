@@ -218,14 +218,28 @@ actor HistoryRepository {
 
     func recordUse(id: UUID) -> HistoryMutation {
         openIfNeeded()
+        let copiedAt = Date()
         if let database {
             do {
-                let statement = try database.prepare("UPDATE history_items SET use_count = use_count + 1 WHERE id = ?;")
-                try statement.bind(id.uuidString, at: 1)
-                try statement.run()
-            } catch { return failure(error, message: "Could not update usage count.") }
+                var updatedItems: [ClipboardItem] = []
+                try database.transaction {
+                    let statement = try database.prepare("UPDATE history_items SET copied_at = ?, use_count = use_count + 1 WHERE id = ?;")
+                    try statement.bind(copiedAt.timeIntervalSince1970, at: 1)
+                    try statement.bind(id.uuidString, at: 2)
+                    try statement.run()
+                    updatedItems = try fetchRecentItems(limit: limit, database: database)
+                }
+                items = updatedItems
+            } catch { return failure(error, message: "Could not update this clipboard item's recent use.") }
+        } else if let index = items.firstIndex(where: { $0.id == id }) {
+            items[index].copiedAt = copiedAt
+            items[index].useCount += 1
+            items.sort {
+                if $0.isPinned != $1.isPinned { return $0.isPinned }
+                return $0.copiedAt > $1.copiedAt
+            }
         }
-        if let index = items.firstIndex(where: { $0.id == id }) { items[index].useCount += 1 }
+        errorMessage = nil
         return HistoryMutation(result: .success, snapshot: snapshot())
     }
 

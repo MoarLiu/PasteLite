@@ -14,8 +14,8 @@ jobs:
     runs-on: macos-15-intel
     timeout-minutes: 30
     env:
-      APP_VERSION: "0.3.0"
-      APP_BUILD: "30"
+      APP_VERSION: "0.3.1"
+      APP_BUILD: "31"
       SWIFT_TEST_BUILD_SYSTEM: native
 
     steps:

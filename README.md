@@ -19,6 +19,7 @@ SwiftUI, AppKit, and SQLite.
 - General, Storage, Privacy, and Updates settings.
 - Concealed-content masking and expiry, app exclusions, and clear-on-quit.
 - Architecture-aware verified updates with stable/Beta channels.
+- Manual update checks download and verify new versions inside the app, then offer Install & Relaunch.
 
 ## Requirements
 
@@ -27,17 +28,17 @@ SwiftUI, AppKit, and SQLite.
 
 ## Downloads
 
-Download [PasteLite 0.3.0](https://github.com/MoarLiu/PasteLite/releases/tag/v0.3.0):
+Download [PasteLite 0.3.1](https://github.com/MoarLiu/PasteLite/releases/tag/v0.3.1):
 
-- [Apple Silicon DMG](https://github.com/MoarLiu/PasteLite/releases/download/v0.3.0/PasteLite-0.3.0-macos-arm64.dmg)
-- [Intel DMG](https://github.com/MoarLiu/PasteLite/releases/download/v0.3.0/PasteLite-0.3.0-macos-x86_64.dmg)
+- [Apple Silicon DMG](https://github.com/MoarLiu/PasteLite/releases/download/v0.3.1/PasteLite-0.3.1-macos-arm64.dmg)
+- [Intel DMG](https://github.com/MoarLiu/PasteLite/releases/download/v0.3.1/PasteLite-0.3.1-macos-x86_64.dmg)
 
 The release is ad-hoc signed and not notarized. If Gatekeeper blocks the first
 launch, use System Settings → Privacy & Security → Open Anyway.
 
 ## Development
 
-Current version: **0.3.0 (build 30)**.
+Current version: **0.3.1 (build 31)**.
 
 Build and test scripts prefer the full Xcode installation at `/Applications/Xcode.app`.
 Set `DEVELOPER_DIR` explicitly to use another toolchain.

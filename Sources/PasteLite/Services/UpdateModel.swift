@@ -15,6 +15,11 @@ struct InstallableRelease: Decodable {
     var assets: [ReleaseAsset]?
 }
 
+enum UpdateCheckTrigger: Equatable {
+    case manual
+    case automatic
+}
+
 @MainActor
 final class UpdateModel: ObservableObject {
     static let shared = UpdateModel()
@@ -24,16 +29,32 @@ final class UpdateModel: ObservableObject {
     @Published private(set) var release: InstallableRelease?
     @Published private(set) var stagedApp: URL?
     @Published private(set) var lastChecked: Date?
+    private let preferences: AppPreferences
+    private let currentVersion: String
+    private let fetchRelease: (URLRequest) async throws -> (Data, URLResponse)
+    private let stageRelease: (InstallableRelease) async throws -> URL
+    private let installRelease: @MainActor (URL) throws -> Void
 
-    func check() async {
-        guard !isChecking, !isDownloading else { return }
+    init(preferences: AppPreferences? = nil, currentVersion: String = AppInfo.version,
+         fetchRelease: @escaping (URLRequest) async throws -> (Data, URLResponse) = { try await URLSession.shared.data(for: $0) },
+         stageRelease: @escaping (InstallableRelease) async throws -> URL = { try await ReleaseInstaller.stage($0) },
+         installRelease: @escaping @MainActor (URL) throws -> Void = {
+             try ReleaseInstaller.install($0)
+             NSApp.terminate(nil)
+         }) {
+        self.preferences = preferences ?? .shared
+        self.currentVersion = currentVersion
+        self.fetchRelease = fetchRelease
+        self.stageRelease = stageRelease
+        self.installRelease = installRelease
+    }
+
+    func check(trigger: UpdateCheckTrigger = .manual) async {
+        guard !isChecking, !isDownloading, stagedApp == nil else { return }
         isChecking = true
         release = nil
-        if let stagedApp { try? FileManager.default.removeItem(at: stagedApp.deletingLastPathComponent()) }
-        stagedApp = nil
         defer { isChecking = false; lastChecked = Date() }
         message = "Checking for updates…"
-        let preferences = AppPreferences.shared
         do {
             let custom = preferences.updateEndpoint.trimmingCharacters(in: .whitespacesAndNewlines)
             var endpoint = custom.isEmpty ? AppInfo.updateCheckURL : URL(string: custom)
@@ -42,8 +63,8 @@ final class UpdateModel: ObservableObject {
             }
             guard let endpoint, endpoint.scheme == "https" else { throw UpdateCheckError.invalidResponse }
             var request = URLRequest(url: endpoint, timeoutInterval: 30)
-            request.setValue("PasteLite/\(AppInfo.version)", forHTTPHeaderField: "User-Agent")
-            let (data, response) = try await URLSession.shared.data(for: request)
+            request.setValue("PasteLite/\(currentVersion)", forHTTPHeaderField: "User-Agent")
+            let (data, response) = try await fetchRelease(request)
             guard let response = response as? HTTPURLResponse, response.statusCode == 200 else { throw UpdateCheckError.invalidResponse }
             let decoder = JSONDecoder()
             let candidates: [InstallableRelease]
@@ -52,37 +73,36 @@ final class UpdateModel: ObservableObject {
             let latest = candidates.filter { $0.draft != true && (preferences.updateChannel == .beta || $0.prerelease != true) }
                 .sorted { UpdateChecker.compareVersions($0.tag_name, $1.tag_name) == .orderedDescending }.first
             guard let latest else { throw UpdateCheckError.invalidReleaseData }
-            if UpdateChecker.compareVersions(latest.tag_name, AppInfo.version) == .orderedDescending {
+            if UpdateChecker.compareVersions(latest.tag_name, currentVersion) == .orderedDescending {
                 release = latest
                 stagedApp = nil
                 message = "PasteLite \(latest.tag_name) is available."
-                if preferences.automaticUpdates && preferences.automaticDownloads {
+                if trigger == .manual || (preferences.automaticUpdates && preferences.automaticDownloads) {
                     await download()
-                    if stagedApp != nil { install() }
+                    if trigger == .automatic, stagedApp != nil { install() }
                 }
             } else {
                 release = nil
-                message = "You’re up to date. PasteLite \(AppInfo.version) is the latest version."
+                message = "You’re up to date. PasteLite \(currentVersion) is the latest version."
             }
         } catch { message = "Could not check for updates: \(error.localizedDescription)" }
     }
 
     func download() async {
-        guard !isDownloading, let release else { return }
+        guard !isDownloading, stagedApp == nil, let release else { return }
         isDownloading = true
         defer { isDownloading = false }
         message = "Downloading and verifying update…"
         do {
-            stagedApp = try await ReleaseInstaller.stage(release)
-            message = "Update verified and ready to install."
+            stagedApp = try await stageRelease(release)
+            message = "Update verified. Choose Install & Relaunch to finish updating."
         } catch { message = "Could not prepare the update: \(error.localizedDescription)" }
     }
 
     func install() {
         guard let stagedApp else { return }
         do {
-            try ReleaseInstaller.install(stagedApp)
-            NSApp.terminate(nil)
+            try installRelease(stagedApp)
         } catch { message = "Could not install the update: \(error.localizedDescription)" }
     }
 }
@@ -109,7 +129,7 @@ enum ReleaseInstaller {
                   $0.browser_download_url.scheme == "https" && $0.browser_download_url.host == "github.com" &&
                   $0.browser_download_url.path.hasPrefix("/MoarLiu/PasteLite/releases/download/")
               }) else {
-            throw InstallError.invalid("This release has no verified \(arch) app archive. Open the release page to download it.")
+            throw InstallError.invalid("This release has no verified \(arch) app archive. Please check for updates again later.")
         }
         let (archive, response) = try await URLSession.shared.download(from: zip.browser_download_url)
         defer { try? FileManager.default.removeItem(at: archive) }

@@ -234,13 +234,17 @@ struct SettingsView: View {
                 Text("PasteLite").font(.system(size: 23, weight: .semibold))
                 Text(AppInfo.displayVersion).font(.system(size: 12)).foregroundStyle(.secondary)
                 Text(updater.message).font(.system(size: 12)).foregroundStyle(.secondary).multilineTextAlignment(.center)
+                Text("Updates download inside PasteLite. Installing an update briefly restarts the app.")
+                    .font(.system(size: 11)).foregroundStyle(.secondary).multilineTextAlignment(.center)
                 if updater.isChecking || updater.isDownloading { ProgressView().controlSize(.small) }
                 HStack {
-                    Button("Check for Updates") { Task { await updater.check() } }.disabled(updater.isChecking || updater.isDownloading)
                     if updater.stagedApp != nil {
                         Button("Install & Relaunch") { updater.install() }.buttonStyle(.borderedProminent)
-                    } else if updater.release != nil {
-                        Button("Download Update") { Task { await updater.download() } }.disabled(updater.isDownloading)
+                    } else {
+                        Button("Check for Updates") { Task { await updater.check() } }.disabled(updater.isChecking || updater.isDownloading)
+                        if updater.release != nil {
+                            Button("Download Update") { Task { await updater.download() } }.disabled(updater.isChecking || updater.isDownloading)
+                        }
                     }
                 }
                 if let last = updater.lastChecked { Text("Last checked \(last.formatted(date: .abbreviated, time: .shortened))").font(.system(size: 11)).foregroundStyle(.tertiary) }
@@ -265,7 +269,7 @@ struct SettingsView: View {
                 }.padding(.top, 10)
             }.font(.system(size: 12))
             HStack {
-                Link("Release Notes", destination: updater.release?.html_url ?? URL(string: "https://github.com/MoarLiu/PasteLite/releases")!)
+                Link("View Release Notes on GitHub", destination: updater.release?.html_url ?? URL(string: "https://github.com/MoarLiu/PasteLite/releases")!)
                 Spacer()
                 Link("Send Feedback", destination: URL(string: "https://github.com/MoarLiu/PasteLite/issues")!)
             }.font(.system(size: 12))

@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.3.1 - 2026-11-06
+
+Version 0.3.1 (build 31).
+
+- Refresh the copy time and recent ordering when reusing a history item, while preserving pinned sections and the original record.
+- Persist the updated time and ordering across app restarts without adding duplicate records.
+- Remove copy and paste success notifications; failures still show their error messages.
+- Download and verify updates inside PasteLite after a manual check, then offer Install & Relaunch to finish updating.
+- Keep verified updates ready until installation and clearly label the optional GitHub release-notes link.
+
 ## 0.3.0 - 2026-11-05
 
 Version 0.3.0 (build 30).

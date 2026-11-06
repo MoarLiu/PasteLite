@@ -7,9 +7,9 @@ import Testing
 @MainActor
 struct RegressionTests {
     @Test
-    func developmentVersionIs030() {
-        #expect(AppInfo.fallbackVersion == "0.3.0")
-        #expect(AppInfo.fallbackBuild == "30")
+    func developmentVersionIs031() {
+        #expect(AppInfo.fallbackVersion == "0.3.1")
+        #expect(AppInfo.fallbackBuild == "31")
     }
 
     @Test
@@ -129,6 +129,110 @@ struct RegressionTests {
             #expect(store.items.map(\.id) == [original.id])
             monitor.stop()
         }
+    }
+
+    enum HistoryCopyAction: CaseIterable {
+        case copy, primary, alternate
+    }
+
+    @Test(arguments: HistoryCopyAction.allCases)
+    func copyingOlderHistoryRefreshesItsTimeAndOrder(action: HistoryCopyAction) async throws {
+        try await withFixture { store, pasteboard, databaseURL in
+            var older = item("older history")
+            older.copiedAt = Date().addingTimeInterval(-172_800)
+            var newer = item("newer history")
+            newer.copiedAt = Date().addingTimeInterval(-60)
+            #expect(await store.add(older) == .success)
+            #expect(await store.add(newer) == .success)
+            #expect(store.items.map(\.id) == [newer.id, older.id])
+
+            let state = AppState()
+            state.selectedItemID = older.id
+            defer { state.clearStatus() }
+            let controller = HistoryPanelController(appState: state, historyStore: store,
+                pasteService: PasteService(historyStore: store, pasteboard: pasteboard))
+            let panel = try #require(controller.window as? HistoryPanel)
+            let monitor = ClipboardMonitor(historyStore: store, pasteboard: pasteboard)
+            defer { monitor.stop(); controller.close() }
+            let startedAt = Date()
+            switch action {
+            case .copy: panel.onCopyAction?()
+            case .primary: panel.onReturnAction?()
+            case .alternate: panel.onAlternateReturnAction?()
+            }
+            await controller.clipboardActionTask?.value
+            await monitor.checkForChanges()
+
+            #expect(pasteboard.string(forType: .string) == older.previewText)
+            #expect(store.items.map(\.id) == [older.id, newer.id])
+            let refreshed = try #require(store.items.first)
+            #expect(refreshed.copiedAt >= startedAt)
+            #expect(refreshed.copiedAt <= Date())
+            #expect(refreshed.useCount == 1)
+            #expect(state.selectedItemID == older.id)
+            #expect(try await store.resolve(refreshed).assets.map(\.data) == older.assets.map(\.data))
+
+            let reloaded = SQLiteHistoryStore(databaseURL: databaseURL)
+            await reloaded.loadRecentItems()
+            #expect(reloaded.items.map(\.id) == [older.id, newer.id])
+            #expect(reloaded.items.first?.copiedAt == refreshed.copiedAt)
+            #expect(reloaded.items.first?.useCount == 1)
+        }
+    }
+
+    @Test
+    func failedHistoryCopyKeepsItsTimeAndOrder() async throws {
+        try await withFixture { store, pasteboard, databaseURL in
+            var older = item("unavailable history")
+            older.copiedAt = Date().addingTimeInterval(-120)
+            let newer = item("available history")
+            #expect(await store.add(older) == .success)
+            #expect(await store.add(newer) == .success)
+            let database = try SQLiteDatabase(url: databaseURL)
+            let deletion = try database.prepare("DELETE FROM history_assets WHERE history_id = ?;")
+            try deletion.bind(older.id.uuidString, at: 1)
+            try deletion.run()
+            let before = store.items
+            let state = AppState()
+            state.selectedItemID = older.id
+            defer { state.clearStatus() }
+            let controller = HistoryPanelController(appState: state, historyStore: store,
+                pasteService: PasteService(historyStore: store, pasteboard: pasteboard))
+            defer { controller.close() }
+            let panel = try #require(controller.window as? HistoryPanel)
+            panel.onCopyAction?()
+            await controller.clipboardActionTask?.value
+            #expect(state.statusMessage == "This clipboard item is no longer available.")
+            #expect(store.items == before)
+        }
+    }
+
+    @Test(arguments: [false, true])
+    func recordingUseRefreshesTimeWithinPinnedSections(memoryOnly: Bool) async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = SQLiteHistoryStore(databaseURL: memoryOnly ? directory : directory.appendingPathComponent("History.sqlite3"))
+        await store.loadRecentItems()
+        var older = item("older")
+        older.copiedAt = Date().addingTimeInterval(-120)
+        var newer = item("newer")
+        newer.copiedAt = Date().addingTimeInterval(-60)
+        var pinned = item("pinned")
+        pinned.copiedAt = Date().addingTimeInterval(-180)
+        for value in [older, newer, pinned] { #expect(await store.add(value) == .success) }
+        #expect(await store.togglePin(pinned) == .success)
+        let startedAt = Date()
+        await store.recordUse(older)
+        #expect(store.items.map(\.id) == [pinned.id, older.id, newer.id])
+        #expect(store.items.first?.isPinned == true)
+        #expect(store.items[1].copiedAt >= startedAt)
+        #expect(store.items[1].useCount == 1)
+        #expect(try await store.resolve(store.items[1]).assets.map(\.data) == older.assets.map(\.data))
+        await store.recordUse(pinned)
+        #expect(store.items.map(\.id) == [pinned.id, older.id, newer.id])
+        #expect(store.items.first?.isPinned == true)
+        #expect(store.items.first?.copiedAt ?? .distantPast >= startedAt)
     }
 
     @Test
