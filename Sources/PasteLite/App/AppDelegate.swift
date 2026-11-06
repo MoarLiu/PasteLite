@@ -85,6 +85,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         if isReadyToTerminate { return .terminateNow }
         guard !isTerminating else { return .terminateCancel }
+        if panelController?.hasOpenEditor == true {
+            panelController?.finishEditorBeforeQuit { sender.terminate(nil) }
+            return .terminateCancel
+        }
         guard preferences.clearOnQuit else { return .terminateNow }
         isTerminating = true
         clipboardMonitor?.stop()

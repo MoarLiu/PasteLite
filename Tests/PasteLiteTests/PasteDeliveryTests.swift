@@ -121,6 +121,36 @@ struct PasteDeliveryTests {
         #expect(environment.sentCount == 1)
     }
 
+    @Test func librarySnippetUsesTheSameSafePasteDelivery() async throws {
+        try await libraryFixture { store, _, _ in
+            _ = await store.saveLibrary(snippetDraft(name: "Alias", body: "Saved text", generation: store.libraryGeneration))
+            let saved = try #require(store.libraryItems.first)
+            let pasteboard = board()
+            defer { pasteboard.releaseGlobally() }
+            let environment = ControlledPasteEnvironment()
+            let service = PasteService(historyStore: store, pasteboard: pasteboard, environment: environment)
+            #expect(await service.paste(saved.displayItem, into: .current) == .success)
+            #expect(environment.sentCount == 1)
+            #expect(pasteboard.string(forType: .string) == "Saved text")
+        }
+    }
+
+    @Test func clearingLibraryWhileWaitingNeverSendsPaste() async throws {
+        try await libraryFixture { store, _, _ in
+            _ = await store.saveLibrary(snippetDraft(name: "Alias", body: "Saved text", generation: store.libraryGeneration))
+            let saved = try #require(store.libraryItems.first)
+            let pasteboard = board()
+            defer { pasteboard.releaseGlobally() }
+            let environment = ControlledPasteEnvironment()
+            environment.onAsyncWait = { _ = await store.clearLibrary() }
+            defer { environment.onAsyncWait = nil }
+            let service = PasteService(historyStore: store, pasteboard: pasteboard, environment: environment)
+            #expect(!(await service.paste(saved.displayItem, into: .current)).isSuccess)
+            #expect(environment.sentCount == 0)
+            #expect(store.libraryItems.isEmpty)
+        }
+    }
+
     private func board() -> NSPasteboard {
         let pasteboard = NSPasteboard(name: NSPasteboard.Name("PasteDeliveryTests.\(UUID().uuidString)"))
         pasteboard.clearContents()
@@ -140,6 +170,7 @@ private final class ControlledPasteEnvironment: PasteEnvironment {
     var activationSucceeds = true
     var deliverySucceeds = true
     var onWait: (() -> Void)?
+    var onAsyncWait: (() async -> Void)?
     private(set) var activationCount = 0
     private(set) var waitCount = 0
     private(set) var sentCount = 0
@@ -155,6 +186,7 @@ private final class ControlledPasteEnvironment: PasteEnvironment {
         waitCount += 1
         uptime += 0.02
         onWait?()
+        await onAsyncWait?()
     }
     func sendPaste(to app: NSRunningApplication) -> Bool {
         sentCount += 1

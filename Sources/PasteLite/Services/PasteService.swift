@@ -28,11 +28,12 @@ final class PasteService {
     @discardableResult
     func copyToClipboard(_ item: ClipboardItem, plainText: Bool = false) async -> PasteServiceResult {
         let changeCount = pasteboard.changeCount
+        let generation = historyStore?.actionGeneration
         do {
             let loaded = try await resolve(item)
             let prepared = try await prepare(loaded, plainText: plainText)
             try Task.checkCancellation()
-            guard pasteboard.changeCount == changeCount else {
+            guard pasteboard.changeCount == changeCount, historyStore?.actionGeneration == generation else {
                 return .failure("The clipboard changed while loading this item. Please copy it again.")
             }
             return write(prepared)
@@ -56,13 +57,15 @@ final class PasteService {
 
         let startingPID = environment.frontmostProcessIdentifier
         let originalChangeCount = pasteboard.changeCount
+        let generation = historyStore?.actionGeneration
         do {
             let loaded = try await resolve(item)
             let prepared = try await prepare(loaded, plainText: plainText)
             try Task.checkCancellation()
             guard !environment.isTerminated(target),
                   environment.frontmostProcessIdentifier == startingPID,
-                  pasteboard.changeCount == originalChangeCount else {
+                  pasteboard.changeCount == originalChangeCount,
+                  historyStore?.actionGeneration == generation else {
                 return .failure("The active app or clipboard changed. Paste was cancelled.")
             }
             let result = write(prepared)
@@ -80,7 +83,8 @@ final class PasteService {
                 try await environment.waitForActivation()
                 try Task.checkCancellation()
                 guard !environment.isTerminated(target), environment.isAccessibilityTrusted,
-                      pasteboard.changeCount == writtenChangeCount else {
+                      pasteboard.changeCount == writtenChangeCount,
+                      historyStore?.actionGeneration == generation else {
                     return .failure("The target app, permission, or clipboard changed. Paste was cancelled.")
                 }
                 let activePID = environment.frontmostProcessIdentifier
@@ -115,6 +119,13 @@ final class PasteService {
 
     private func prepare(_ item: ClipboardItem, plainText: Bool) async throws -> ClipboardItem {
         guard !item.isExpired else { throw HistoryItemLoadError.unavailable }
+        if item.origin == .library, item.kind == .file {
+            let paths = item.assets.filter { $0.pasteboardType == .fileURL }
+                .compactMap { URL(dataRepresentation: $0.data, relativeTo: nil)?.path }
+            guard !paths.isEmpty, paths.allSatisfy({ FileManager.default.fileExists(atPath: $0) }) else {
+                throw LibraryError.invalid("A saved file is unavailable. It may have been moved or deleted.")
+            }
+        }
         guard plainText else { return item }
         let conversion = Task.detached(priority: .userInitiated) { Self.plainTextItem(item) }
         let prepared = await withTaskCancellationHandler { await conversion.value } onCancel: { conversion.cancel() }
@@ -135,7 +146,7 @@ final class PasteService {
     private func resolve(_ item: ClipboardItem) async throws -> ClipboardItem {
         try Task.checkCancellation()
         guard !item.isExpired else { throw HistoryItemLoadError.unavailable }
-        if item.hasLoadedAssets { return item }
+        if item.hasLoadedAssets, item.origin == .history { return item }
         guard let historyStore else { throw HistoryItemLoadError.unavailable }
         return try await historyStore.resolve(item)
     }

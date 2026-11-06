@@ -7,6 +7,7 @@ enum PreviewFixtures {
     static func seed(_ store: SQLiteHistoryStore) async {
         await store.loadRecentItems()
         guard store.items.isEmpty else { return }
+        let groupID = await store.createGroup("Development").itemID
         let examples: [(ClipboardKind, String, String, String)] = [
             (.code, "ssh deploy@example.local", "ssh deploy@example.local", "Terminal"),
             (.color, "#FF5A4E", "#FF5A4E", "Figma"),
@@ -24,13 +25,21 @@ enum PreviewFixtures {
                 assets: [.init(index: 0, pasteboardType: .string, data: Data((value.0 == .concealed ? "Demo secret, for UI testing only" : value.2).utf8))])
             item.useCount = index == 0 ? 37 : index
             _ = await store.add(item)
-            if index < 2, let saved = store.items.first(where: { $0.id == item.id }) { _ = await store.togglePin(saved) }
+            if index < 2 {
+                let draft = LibraryDraft(type: .snapshot, name: index == 0 ? "Deploy to staging" : "Brand color",
+                                         groupID: index == 0 ? groupID : nil, body: "", kind: item.kind,
+                                         source: item, generation: store.libraryGeneration)
+                _ = await store.saveLibrary(draft)
+            }
         }
         if let image = NSImage(named: "AppIcon"), let tiff = image.tiffRepresentation {
             let item = ClipboardItem(title: "Image 1024 × 1024", kind: .image, sourceAppName: "Preview",
                 contentHash: "preview-image", previewText: "", assets: [.init(index: 0, pasteboardType: .tiff, data: tiff)])
             _ = await store.add(item)
         }
+        _ = await store.saveLibrary(LibraryDraft(type: .snippet, name: "需求整理", groupID: groupID,
+                                                body: "请整理以下需求：\n\n1. 用户场景\n2. 功能范围\n3. 验收标准\n",
+                                                kind: .text, generation: store.libraryGeneration))
     }
 }
 #endif

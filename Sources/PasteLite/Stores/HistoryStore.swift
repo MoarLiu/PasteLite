@@ -15,6 +15,7 @@ enum HistoryStoreMutationResult: Equatable, Sendable {
 protocol HistoryStore: AnyObject, ObservableObject {
     var items: [ClipboardItem] { get }
     var captureGeneration: Int { get }
+    var actionGeneration: Int { get }
     func loadRecentItems(limit: Int) async
     @discardableResult func add(_ item: ClipboardItem) async -> HistoryStoreMutationResult
     @discardableResult func addCaptured(_ item: ClipboardItem, generation: Int) async -> HistoryStoreMutationResult
@@ -27,6 +28,7 @@ protocol HistoryStore: AnyObject, ObservableObject {
 @MainActor
 extension HistoryStore {
     var captureGeneration: Int { 0 }
+    var actionGeneration: Int { captureGeneration }
 
     func addCaptured(_ item: ClipboardItem, generation: Int) async -> HistoryStoreMutationResult {
         guard generation == captureGeneration else { return .success }
@@ -49,12 +51,21 @@ final class SQLiteHistoryStore: HistoryStore {
     @Published private(set) var errorMessage: String?
     @Published private(set) var captureErrorMessage: String?
     @Published private(set) var isLoading = true
+    @Published private(set) var libraryItems: [LibraryItem] = []
+    @Published private(set) var libraryGroups: [LibraryGroup] = []
+    @Published private(set) var isLibraryAvailable = false
+    @Published private(set) var libraryErrorMessage: String?
+    @Published private(set) var snapshotRevision = 0
     private(set) var captureGeneration = 0
+    private(set) var libraryGeneration = 0
+    var actionGeneration: Int { captureGeneration + libraryGeneration }
     private let repository: HistoryRepository
     private var appliedRevision = 0
     private var imageCacheGeneration = 0
     private let imageCache = NSCache<NSString, NSImage>()
     @Published private(set) var deletedItem: ClipboardItem?
+    @Published private(set) var deletedLibraryItem: LibraryItem?
+    var hasUndoDeletion: Bool { deletedItem != nil || deletedLibraryItem != nil }
     private var undoTask: Task<Void, Never>?
     private var deletionGeneration = 0
     private var pendingRemovals = Set<UUID>()
@@ -110,6 +121,7 @@ final class SQLiteHistoryStore: HistoryStore {
             undoTask?.cancel()
             undoToken = UUID()
             deletedItem = resolved
+            deletedLibraryItem = nil
             undoTask = Task { [weak self] in
                 try? await Task.sleep(nanoseconds: 5_000_000_000)
                 guard !Task.isCancelled else { return }
@@ -123,6 +135,7 @@ final class SQLiteHistoryStore: HistoryStore {
     func clear() async -> HistoryStoreMutationResult {
         // Invalidate captures immediately, including work still processing off the main actor.
         captureGeneration += 1
+        libraryGeneration += 1
         deletionGeneration += 1
         discardUndo()
         let mutation = await repository.clear(captureGeneration: captureGeneration)
@@ -139,9 +152,17 @@ final class SQLiteHistoryStore: HistoryStore {
         undoTask?.cancel()
         undoTask = nil
         deletedItem = nil
+        deletedLibraryItem = nil
     }
 
     func undoDelete() async -> HistoryStoreMutationResult {
+        if let item = deletedLibraryItem {
+            let token = undoToken
+            let mutation = await repository.restoreLibrary(item, generation: libraryGeneration)
+            apply(mutation.snapshot)
+            if token == undoToken, mutation.result.isSuccess { discardUndo() }
+            return mutation.result
+        }
         guard let item = deletedItem else { return .success }
         let token = undoToken
         let generation = captureGeneration
@@ -158,7 +179,84 @@ final class SQLiteHistoryStore: HistoryStore {
     }
 
     func recordUse(_ item: ClipboardItem) async {
-        apply((await repository.recordUse(id: item.id)).snapshot)
+        if item.origin == .library { apply((await repository.recordLibraryUse(id: item.id)).snapshot) }
+        else { apply((await repository.recordUse(id: item.id)).snapshot) }
+    }
+
+    func loadLibrary() async { apply(await repository.loadLibrary()) }
+    func retryStorage() async { apply(await repository.retryStorage()) }
+
+    func saveLibrary(_ draft: LibraryDraft) async -> LibraryMutation {
+        let mutation = await repository.saveLibrary(draft)
+        apply(mutation.snapshot)
+        if mutation.result.isSuccess { clearImageCache() }
+        return mutation
+    }
+
+    func createGroup(_ name: String) async -> LibraryMutation {
+        let generation = libraryGeneration
+        let mutation = await repository.createLibraryGroup(name: name, generation: generation)
+        apply(mutation.snapshot)
+        return mutation
+    }
+
+    func renameGroup(_ group: LibraryGroup, name: String) async -> HistoryStoreMutationResult {
+        let mutation = await repository.renameLibraryGroup(id: group.id, name: name)
+        apply(mutation.snapshot)
+        return mutation.result
+    }
+
+    func deleteGroup(_ group: LibraryGroup) async -> HistoryStoreMutationResult {
+        let mutation = await repository.deleteLibraryGroup(id: group.id)
+        apply(mutation.snapshot)
+        return mutation.result
+    }
+
+    func moveLibraryItem(_ item: LibraryItem, groupID: UUID?) async -> HistoryStoreMutationResult {
+        let generation = libraryGeneration
+        let mutation = await repository.moveLibraryItem(id: item.id, groupID: groupID, generation: generation)
+        apply(mutation.snapshot)
+        return mutation.result
+    }
+
+    func removeLibraryItem(id: UUID) async -> HistoryStoreMutationResult {
+        guard !pendingRemovals.contains(id), var original = libraryItems.first(where: { $0.id == id }) else { return .success }
+        pendingRemovals.insert(id)
+        defer { pendingRemovals.remove(id) }
+        let generation = deletionGeneration
+        do {
+            let loaded = try await resolve(original.displayItem)
+            original.content.assets = loaded.assets
+            original.content.hasLoadedAssets = true
+        } catch { return .failure(error.localizedDescription) }
+        guard generation == deletionGeneration else { return .success }
+        let mutation = await repository.removeLibraryItem(id: id)
+        apply(mutation.snapshot)
+        if mutation.result.isSuccess, generation == deletionGeneration {
+            clearImageCache()
+            discardUndo()
+            deletedLibraryItem = original
+            undoTask = Task { [weak self] in
+                do { try await Task.sleep(nanoseconds: 5_000_000_000) } catch { return }
+                guard !Task.isCancelled else { return }
+                self?.deletedLibraryItem = nil
+            }
+        }
+        return mutation.result
+    }
+
+    func clearLibrary() async -> HistoryStoreMutationResult {
+        libraryGeneration += 1
+        deletionGeneration += 1
+        discardUndo()
+        let mutation = await repository.clearLibrary(generation: libraryGeneration)
+        apply(mutation.snapshot)
+        if mutation.result.isSuccess { clearImageCache() }
+        return mutation.result
+    }
+
+    func savedSnapshot(for item: ClipboardItem) -> LibraryItem? {
+        libraryItems.first { $0.type == .snapshot && $0.sourceContentHash == item.contentHash }
     }
 
     func updateLimit(_ limit: Int) async { apply(await repository.updateLimit(limit)) }
@@ -169,6 +267,7 @@ final class SQLiteHistoryStore: HistoryStore {
 
     func clearIncludingPinned() async -> HistoryStoreMutationResult {
         captureGeneration += 1
+        libraryGeneration += 1
         deletionGeneration += 1
         discardUndo()
         let mutation = await repository.clear(captureGeneration: captureGeneration, includePinned: true)
@@ -180,7 +279,7 @@ final class SQLiteHistoryStore: HistoryStore {
     func resolve(_ item: ClipboardItem) async throws -> ClipboardItem {
         try Task.checkCancellation()
         guard !item.isExpired else { throw HistoryItemLoadError.unavailable }
-        if item.hasLoadedAssets { return item }
+        if item.hasLoadedAssets, item.origin == .history { return item }
         let loaded = try await repository.resolve(item)
         try Task.checkCancellation()
         guard !loaded.isExpired else { throw HistoryItemLoadError.unavailable }
@@ -189,7 +288,7 @@ final class SQLiteHistoryStore: HistoryStore {
 
     func image(for item: ClipboardItem, maxPixelSize: Int) async -> NSImage? {
         guard !Task.isCancelled else { return nil }
-        let key = "\(item.id):\(item.contentHash):\(maxPixelSize)" as NSString
+        let key = "\(item.origin):\(item.id):\(item.contentHash):\(item.contentRevision):\(maxPixelSize)" as NSString
         if let image = imageCache.object(forKey: key) { return image }
         let generation = imageCacheGeneration
         guard let thumbnail = try? await repository.thumbnail(for: item, maxPixelSize: maxPixelSize),
@@ -212,6 +311,11 @@ final class SQLiteHistoryStore: HistoryStore {
         storageWarning = snapshot.storageWarning
         errorMessage = snapshot.errorMessage
         isLoading = false
+        libraryItems = snapshot.libraryItems
+        libraryGroups = snapshot.libraryGroups
+        isLibraryAvailable = snapshot.isLibraryAvailable
+        libraryErrorMessage = snapshot.libraryErrorMessage
+        snapshotRevision = snapshot.revision
     }
 }
 

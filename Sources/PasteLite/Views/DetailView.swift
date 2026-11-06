@@ -8,6 +8,8 @@ struct DetailView: View {
     var onCopy: (ClipboardItem) -> Void = { _ in }
     var onPin: (ClipboardItem) -> Void = { _ in }
     var onCopyText: (String) -> Void = { _ in }
+    var savedItem: LibraryItem?
+    var onEdit: () -> Void = {}
     @StateObject private var reveal = ConcealedRevealModel()
     @ObservedObject var preferences = AppPreferences.shared
 
@@ -18,18 +20,27 @@ struct DetailView: View {
                     Text(typeTitle(item)).font(.system(size: 11.5, weight: .semibold)).foregroundStyle(.secondary)
                     Spacer()
                     Button { onCopy(item) } label: { Image(systemName: "doc.on.doc") }.help("Copy to clipboard")
-                    Button { onPin(item) } label: {
-                        Image(systemName: item.isPinned ? "pin.fill" : "pin")
-                            .foregroundColor(item.isPinned ? .accentColor : .secondary)
-                    }.help(item.isPinned ? "Unpin item" : "Pin item")
+                    if item.origin == .library {
+                        Button(action: onEdit) { Image(systemName: "pencil") }.help("Edit saved item")
+                    } else if item.kind != .concealed {
+                        let saved = historyStore.savedSnapshot(for: item) != nil
+                        Button { onPin(item) } label: {
+                            Image(systemName: saved ? "star.fill" : "star")
+                                .foregroundColor(saved ? .accentColor : .secondary)
+                        }.help(saved ? "Remove from saved" : "Save to library")
+                    }
                 }.buttonStyle(.borderless).padding(.horizontal, 20).frame(height: 46)
                 preview(item).frame(maxWidth: .infinity, maxHeight: .infinity)
                 Divider()
                 VStack(spacing: 10) {
+                    if let savedItem {
+                        infoRow("Name", savedItem.name)
+                        if savedItem.type == .snapshot { infoRow("Original", savedItem.content.title) }
+                    }
                     infoRow("Source", item.sourceAppName ?? "Unknown App", icon: SourceAppIcon.image(for: item.sourceBundleIdentifier))
-                    infoRow("Copied", RelativeDateTimeFormatter().localizedString(for: item.copiedAt, relativeTo: Date()) + "  " + item.copiedAt.formatted(date: .abbreviated, time: .standard))
+                    infoRow(item.origin == .library ? "Saved" : "Copied", RelativeDateTimeFormatter().localizedString(for: item.copiedAt, relativeTo: Date()) + "  " + item.copiedAt.formatted(date: .abbreviated, time: .standard))
                     infoRow("Size", sizeDescription(item))
-                    infoRow("Used", "Pasted \(item.useCount) \(item.useCount == 1 ? "time" : "times")")
+                    infoRow("Used", "\(item.useCount) \(item.useCount == 1 ? "time" : "times")")
                 }.font(.system(size: 11.5)).padding(20)
             } else {
                 VStack(spacing: 10) {
@@ -109,11 +120,14 @@ struct DetailView: View {
                             VStack(alignment: .leading, spacing: 4) {
                                 Text(URL(fileURLWithPath: path).lastPathComponent).font(.system(size: 13, weight: .medium))
                                 Text(path).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(2).textSelection(.enabled)
+                                if !FileManager.default.fileExists(atPath: path) {
+                                    Text("File unavailable").font(.system(size: 11)).foregroundColor(.orange)
+                                }
                             }
                             Spacer()
                             Button { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)]) } label: {
                                 Image(systemName: "magnifyingglass")
-                            }.help("Reveal in Finder")
+                            }.help("Reveal in Finder").disabled(!FileManager.default.fileExists(atPath: path))
                         }.padding(12).background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 10))
                     }
                 }.padding(20)

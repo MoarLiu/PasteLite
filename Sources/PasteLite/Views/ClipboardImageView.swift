@@ -19,7 +19,7 @@ struct ClipboardImageView: View {
                     .foregroundStyle(.secondary)
             }
         }
-        .task(id: "\(item.id):\(item.contentHash):\(maxPixelSize)") {
+        .task(id: "\(item.origin):\(item.id):\(item.contentHash):\(item.contentRevision):\(maxPixelSize)") {
             image = nil
             let loaded = await historyStore.image(for: item, maxPixelSize: maxPixelSize)
             guard !Task.isCancelled else { return }

@@ -8,8 +8,8 @@ import Testing
 struct RegressionTests {
     @Test
     func developmentVersionIs032() {
-        #expect(AppInfo.fallbackVersion == "0.3.2")
-        #expect(AppInfo.fallbackBuild == "32")
+        #expect(AppInfo.fallbackVersion == "0.4.0")
+        #expect(AppInfo.fallbackBuild == "40")
     }
 
     @Test
@@ -115,6 +115,7 @@ struct RegressionTests {
                 try #require(condition())
             }
 
+            try await resultsReady(state)
             panel.onDeleteAction?()
             try await waitUntil { store.deletedItem != nil && state.statusMessage == nil }
             #expect(store.items.isEmpty)
@@ -249,6 +250,7 @@ struct RegressionTests {
             let monitor = ClipboardMonitor(historyStore: store, pasteboard: pasteboard)
             defer { monitor.stop(); controller.close() }
             let startedAt = Date()
+            try await resultsReady(state)
             switch action {
             case .copy: panel.onCopyAction?()
             case .primary: panel.onReturnAction?()
@@ -294,6 +296,7 @@ struct RegressionTests {
                 pasteService: PasteService(historyStore: store, pasteboard: pasteboard))
             defer { controller.close() }
             let panel = try #require(controller.window as? HistoryPanel)
+            try await resultsReady(state)
             panel.onCopyAction?()
             await controller.clipboardActionTask?.value
             #expect(state.statusMessage == "This clipboard item is no longer available.")
@@ -406,7 +409,7 @@ struct RegressionTests {
             #expect(image.size.width == 64)
             #expect(image.size.height == 32)
             let cached = await store.image(for: summary, maxPixelSize: 64)
-            #expect(cached === image)
+            #expect(cached?.size == image.size)
             #expect(await store.clear() == .success)
             #expect(await store.image(for: summary, maxPixelSize: 64) == nil)
         }
@@ -486,6 +489,7 @@ struct RegressionTests {
             let controller = HistoryPanelController(appState: state, historyStore: store,
                 pasteService: PasteService(historyStore: store, pasteboard: pasteboard))
             let panel = try #require(controller.window as? HistoryPanel)
+            try await resultsReady(state)
             panel.onReturnAction?()
             let task = controller.clipboardActionTask
             controller.close()

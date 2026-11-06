@@ -7,6 +7,10 @@ struct HistorySnapshot: Sendable {
     var items: [ClipboardItem]
     var storageWarning: String?
     var errorMessage: String?
+    var libraryItems: [LibraryItem] = []
+    var libraryGroups: [LibraryGroup] = []
+    var isLibraryAvailable = false
+    var libraryErrorMessage: String?
 }
 
 struct HistoryMutation: Sendable {
@@ -29,20 +33,24 @@ actor HistoryRepository {
     private let databaseURL: URL
     private var limit: Int
     private let memoryByteLimit = 64 * 1024 * 1024
-    private var database: SQLiteDatabase?
+    var database: SQLiteDatabase?
     private var didOpen = false
     private var items: [ClipboardItem] = []
     private var revision = 0
-    private var captureGeneration = 0
+    var captureGeneration = 0
+    var libraryGeneration = 0
     private var storageWarning: String?
     private var errorMessage: String?
+    var libraryItems: [LibraryItem] = []
+    var libraryGroups: [LibraryGroup] = []
+    var libraryErrorMessage: String?
 
     init(databaseURL: URL, limit: Int) {
         self.databaseURL = databaseURL
         self.limit = max(1, limit)
     }
 
-    private func openIfNeeded() {
+    func openIfNeeded() {
         guard !didOpen else { return }
         didOpen = true
         do {
@@ -52,7 +60,10 @@ actor HistoryRepository {
             )
             try migrate(database)
             self.database = database
+            try refreshLibrary(database)
         } catch {
+            self.database = nil
+            libraryErrorMessage = LibraryError.unavailable.localizedDescription
             storageWarning = "History is stored in memory only and will be lost when PasteLite quits. Older items may be removed when memory is full."
             Self.logger.warning("History is using memory only: \(error.localizedDescription, privacy: .public)")
         }
@@ -70,6 +81,20 @@ actor HistoryRepository {
             }
         } else { pruneMemory() }
         return snapshot()
+    }
+
+    func retryStorage() -> HistorySnapshot {
+        guard database == nil else { return loadLibrary() }
+        let pending = items
+        didOpen = false
+        openIfNeeded()
+        guard database != nil else { return snapshot() }
+        storageWarning = nil
+        for item in pending where item.hasLoadedAssets && !item.isExpired {
+            let mutation = add(item)
+            if !mutation.result.isSuccess { break }
+        }
+        return loadRecentItems(limit: limit)
     }
 
     func add(_ item: ClipboardItem, captureGeneration generation: Int? = nil) -> HistoryMutation {
@@ -166,12 +191,27 @@ actor HistoryRepository {
     func clear(captureGeneration generation: Int? = nil, includePinned: Bool = false) -> HistoryMutation {
         captureGeneration = generation.map { max(captureGeneration, $0) } ?? (captureGeneration + 1)
         openIfNeeded()
+        libraryGeneration += 1
         if let database {
             do {
-                try database.execute(includePinned ? "DELETE FROM history_items;" : "DELETE FROM history_items WHERE is_pinned = 0;")
+                try database.execute("BEGIN IMMEDIATE TRANSACTION;")
+                do {
+                    try database.execute(includePinned ? "DELETE FROM history_items;" : "DELETE FROM history_items WHERE is_pinned = 0;")
+                    if includePinned {
+                        try database.execute("DELETE FROM library_items; DELETE FROM library_groups;")
+                    }
+                    try database.execute("COMMIT;")
+                } catch {
+                    try? database.execute("ROLLBACK;")
+                    throw error
+                }
+                if includePinned { libraryItems = []; libraryGroups = [] }
             } catch {
                 return failure(error, message: "Could not clear clipboard history.")
             }
+        } else if includePinned, FileManager.default.fileExists(atPath: databaseURL.path),
+                  (try? FileManager.default.attributesOfItem(atPath: databaseURL.path)[.type]) as? FileAttributeType == .typeRegular {
+            return failure(LibraryError.unavailable, message: "Could not clear saved data on disk. Restore storage access and retry.")
         }
         items.removeAll { includePinned || !$0.isPinned }
         errorMessage = nil
@@ -181,6 +221,7 @@ actor HistoryRepository {
     func resolve(_ item: ClipboardItem) throws -> ClipboardItem {
         try Task.checkCancellation()
         openIfNeeded()
+        if item.origin == .library { return try resolveLibrary(item) }
         guard !item.isExpired else {
             throw HistoryItemLoadError.unavailable
         }
@@ -290,6 +331,7 @@ actor HistoryRepository {
     func thumbnail(for item: ClipboardItem, maxPixelSize: Int) throws -> ClipboardThumbnail? {
         try Task.checkCancellation()
         openIfNeeded()
+        if item.origin == .library { return try libraryThumbnail(item, maxPixelSize: maxPixelSize) }
         let data: Data?
         if item.hasLoadedAssets {
             data = ClipboardImageProcessor.imageData(in: item.assets)
@@ -321,9 +363,12 @@ actor HistoryRepository {
         return thumbnail
     }
 
-    private func snapshot() -> HistorySnapshot {
+    func snapshot() -> HistorySnapshot {
         revision += 1
-        return HistorySnapshot(revision: revision, items: items.map(\.metadataOnly), storageWarning: storageWarning, errorMessage: errorMessage)
+        return HistorySnapshot(revision: revision, items: items.map(\.metadataOnly), storageWarning: storageWarning,
+                               errorMessage: errorMessage, libraryItems: libraryItems.map(\.metadataOnly),
+                               libraryGroups: libraryGroups, isLibraryAvailable: database != nil,
+                               libraryErrorMessage: libraryErrorMessage)
     }
 
     private func record(_ error: Error, message: String) {
@@ -337,6 +382,11 @@ actor HistoryRepository {
     }
 
     private func migrate(_ database: SQLiteDatabase) throws {
+        let versionQuery = try database.prepare("PRAGMA user_version;")
+        let version = try versionQuery.step() ? Int(versionQuery.columnInt64(at: 0)) : 0
+        guard version <= 4 else { throw LibraryError.invalid("This database belongs to a newer PasteLite version.") }
+        try database.execute("BEGIN IMMEDIATE TRANSACTION;")
+        do {
         try database.execute(
             """
             CREATE TABLE IF NOT EXISTS history_items (
@@ -374,13 +424,12 @@ actor HistoryRepository {
         let columns = try database.prepare("PRAGMA table_info(history_items);")
         var names = Set<String>()
         while try columns.step() { if let name = columns.columnString(at: 1) { names.insert(name) } }
-        try database.execute("BEGIN IMMEDIATE TRANSACTION;")
-        do {
             if !names.contains("is_pinned") { try database.execute("ALTER TABLE history_items ADD COLUMN is_pinned INTEGER NOT NULL DEFAULT 0;") }
             if !names.contains("use_count") { try database.execute("ALTER TABLE history_items ADD COLUMN use_count INTEGER NOT NULL DEFAULT 0;") }
             if !names.contains("expires_at") { try database.execute("ALTER TABLE history_items ADD COLUMN expires_at REAL;") }
             try database.execute("UPDATE history_items SET expires_at = copied_at + 86400 WHERE kind = 'concealed' AND expires_at IS NULL;")
-            try database.execute("PRAGMA user_version = 3;")
+            try migrateLibrary(database, migratePins: version < 4)
+            try database.execute("PRAGMA user_version = 4;")
             try database.execute("COMMIT;")
         } catch {
             try? database.execute("ROLLBACK;")

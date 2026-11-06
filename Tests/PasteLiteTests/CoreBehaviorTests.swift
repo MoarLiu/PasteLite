@@ -190,6 +190,7 @@ func historyPanelReturnActionCopiesAndHidesWindow() async throws {
     let panel = try #require(controller.window as? HistoryPanel)
 
     panel.orderFrontRegardless()
+    try await resultsReady(appState)
     panel.onReturnAction?()
     await controller.clipboardActionTask?.value
 

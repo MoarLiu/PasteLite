@@ -14,9 +14,12 @@ final class HistoryPanelController: NSWindowController {
     private let preferences = AppPreferences.shared
     private var preferenceObserver: AnyCancellable?
     private var actionsObserver: AnyCancellable?
+    private var storeObserver: AnyCancellable?
+    private var observedLibraryGeneration = 0
+    private var observedCaptureGeneration = 0
 
     private var currentItems: [ClipboardItem] {
-        appState.filteredItems(in: historyStore.items)
+        appState.visibleItems
     }
 
     private var currentSelection: ClipboardItem? {
@@ -61,7 +64,17 @@ final class HistoryPanelController: NSWindowController {
                 onCopyText: { [weak self] text in
                     guard let self else { return }
                     self.appState.apply(self.pasteService.copyString(text))
-                }
+                },
+                onNewSnippet: { [weak self] in self?.newSnippet() },
+                onCreateSnippet: { [weak self] item in self?.prepareEditor(item, type: .snippet) },
+                onEditSaved: { [weak self] item in self?.editSaved(item) },
+                onDeleteGroup: { [weak self] group in self?.deleteGroup(group) },
+                onMoveSaved: { [weak self] item, group in
+                    guard let self else { return }
+                    Task { self.report(await self.historyStore.moveLibraryItem(item, groupID: group)) }
+                },
+                onClearLibrary: { [weak self] in self?.confirmAndClearLibrary() },
+                onOpenLink: { [weak self] url in self?.close(); NSWorkspace.shared.open(url) }
             )
         )
         preferenceObserver = preferences.$showPreview.removeDuplicates().sink { [weak self] preview in
@@ -75,6 +88,18 @@ final class HistoryPanelController: NSWindowController {
                 self.close()
             }
         }
+        storeObserver = historyStore.$snapshotRevision.sink { [weak self] _ in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                if self.observedLibraryGeneration != self.historyStore.libraryGeneration ||
+                    self.observedCaptureGeneration != self.historyStore.captureGeneration {
+                    self.cancelClipboardAction()
+                    self.observedLibraryGeneration = self.historyStore.libraryGeneration
+                    self.observedCaptureGeneration = self.historyStore.captureGeneration
+                }
+            }
+        }
+        refreshResults()
     }
 
     required init?(coder: NSCoder) {
@@ -91,6 +116,8 @@ final class HistoryPanelController: NSWindowController {
 
     override func close() {
         guard !isOrderingOut else { return }
+        if appState.editorDraft != nil { appState.requestEditorDismissal(); return }
+        if appState.groupDraft != nil { return }
         cancelClipboardAction()
         hidePanel()
     }
@@ -108,6 +135,7 @@ final class HistoryPanelController: NSWindowController {
         previousApp = frontmostApp?.processIdentifier == ProcessInfo.processInfo.processIdentifier ? nil : frontmostApp
         appState.pasteTargetName = previousApp?.localizedName
         appState.prepareForPresentation()
+        refreshResults()
         position(anchor: anchor)
         window?.orderFrontRegardless()
         window?.makeKey()
@@ -194,9 +222,15 @@ final class HistoryPanelController: NSWindowController {
     }
 
     private func togglePin(_ item: ClipboardItem) {
+        guard item.kind != .concealed else { appState.showStatus("Concealed content cannot be saved permanently."); return }
+        if item.origin == .history, historyStore.savedSnapshot(for: item) == nil {
+            prepareEditor(item, type: .snapshot)
+            return
+        }
         Task { [weak self] in
             guard let self else { return }
-            if case let .failure(message) = await self.historyStore.togglePin(item) { self.appState.showStatus(message) }
+            let id = item.origin == .library ? item.id : self.historyStore.savedSnapshot(for: item)?.id
+            if let id { self.report(await self.historyStore.removeLibraryItem(id: id)) }
         }
     }
 
@@ -217,7 +251,8 @@ final class HistoryPanelController: NSWindowController {
         cancelClipboardAction()
         Task { [weak self] in
             guard let self else { return }
-            switch await self.historyStore.remove(id: item.id) {
+            let result = item.origin == .library ? await self.historyStore.removeLibraryItem(id: item.id) : await self.historyStore.remove(id: item.id)
+            switch result {
             case .success:
                 // Undo is the success feedback; don't leave a stale error beside it.
                 self.appState.clearStatus()
@@ -244,7 +279,7 @@ final class HistoryPanelController: NSWindowController {
         let alert = NSAlert()
         alert.messageText = "Clear Clipboard History?"
         appState.actionsPresented = false
-        alert.informativeText = "Delete \(historyStore.items.filter { !$0.isPinned }.count) items from local history? Pinned items will be kept. This cannot be undone."
+        alert.informativeText = "Delete \(historyStore.items.filter { !$0.isPinned }.count) items from local history? Saved items and protected legacy pins will be kept. This cannot be undone."
         alert.alertStyle = .warning
         alert.addButton(withTitle: "Clear History")
         alert.addButton(withTitle: "Cancel")
@@ -263,6 +298,88 @@ final class HistoryPanelController: NSWindowController {
             clearHistory()
         }
     }
+
+    private func refreshResults() {
+        appState.refreshResults(history: historyStore.items, library: historyStore.libraryItems, groups: historyStore.libraryGroups)
+    }
+
+    private func report(_ result: HistoryStoreMutationResult) {
+        if case let .failure(message) = result { appState.showStatus(message, clearAfter: 6) }
+        else { appState.clearStatus() }
+    }
+
+    private func newSnippet() {
+        guard historyStore.isLibraryAvailable else { appState.showStatus(LibraryError.unavailable.localizedDescription); return }
+        appState.beginEditing(LibraryDraft(type: .snippet, name: "Untitled Snippet", groupID: appState.selectedGroup.groupID,
+                                          body: "", kind: .text, generation: historyStore.libraryGeneration))
+    }
+
+    private func editSaved(_ item: LibraryItem) {
+        appState.beginEditing(LibraryDraft(editingID: item.id, expectedRevision: item.revision, type: item.type,
+                                          name: item.name, groupID: item.groupID, body: item.content.previewText,
+                                          kind: item.content.kind, generation: historyStore.libraryGeneration))
+    }
+
+    private func prepareEditor(_ item: ClipboardItem, type: LibraryItemType) {
+        guard historyStore.isLibraryAvailable else { appState.showStatus(LibraryError.unavailable.localizedDescription); return }
+        guard appState.editorDraft == nil, appState.groupDraft == nil else { return }
+        let request = beginClipboardAction()
+        let generation = historyStore.libraryGeneration
+        clipboardActionTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                let loaded = try await self.historyStore.resolve(item)
+                try LibraryValidation.snapshot(loaded)
+                let body: String
+                if type == .snippet {
+                    guard [.text, .code].contains(loaded.kind), let text = ClipboardTextRepresentation.string(in: loaded.assets) else {
+                        throw LibraryError.invalid("This item does not contain editable text.")
+                    }
+                    try LibraryValidation.snippet(text, kind: loaded.kind)
+                    body = text
+                } else { body = "" }
+                guard generation == self.historyStore.libraryGeneration else { throw LibraryError.cleared }
+                guard self.finishClipboardAction(id: request) else { return }
+                self.appState.beginEditing(LibraryDraft(type: type, name: LibraryValidation.defaultName(item.title),
+                                                       groupID: self.appState.selectedGroup.groupID, body: body,
+                                                       kind: loaded.kind, source: loaded, generation: generation))
+            } catch {
+                guard self.finishClipboardAction(id: request) else { return }
+                self.appState.showStatus(error.localizedDescription, clearAfter: 6)
+            }
+        }
+    }
+
+    private func deleteGroup(_ group: LibraryGroup) {
+        let count = historyStore.libraryItems.filter { $0.groupID == group.id }.count
+        confirm(title: "Delete “\(group.name)” ?", message: "\(count) saved items will move to Ungrouped. Their content will be kept.", button: "Delete Group") { [weak self] in
+            guard let self else { return }
+            Task { self.report(await self.historyStore.deleteGroup(group)) }
+        }
+    }
+
+    private func confirmAndClearLibrary() {
+        confirm(title: "Clear Saved Library?", message: "Delete \(historyStore.libraryItems.count) saved items and all custom groups? Clipboard history will be kept. This cannot be undone.", button: "Clear Saved Library") { [weak self] in
+            guard let self else { return }
+            self.cancelClipboardAction()
+            Task { self.report(await self.historyStore.clearLibrary()) }
+        }
+    }
+
+    private func confirm(title: String, message: String, button: String, action: @escaping @MainActor () -> Void) {
+        appState.actionsPresented = false
+        let alert = NSAlert()
+        alert.messageText = title; alert.informativeText = message; alert.alertStyle = .warning
+        alert.addButton(withTitle: button); alert.addButton(withTitle: "Cancel")
+        if let window {
+            alert.beginSheetModal(for: window) { response in
+                Task { @MainActor in if response == .alertFirstButtonReturn { action() } }
+            }
+        }
+    }
+
+    var hasOpenEditor: Bool { appState.editorDraft != nil }
+    func finishEditorBeforeQuit(_ action: @escaping @MainActor () -> Void) { appState.requestEditorDismissal(afterDismiss: action) }
 
     private func configure(_ panel: HistoryPanel) {
         panel.level = .floating
@@ -296,11 +413,11 @@ final class HistoryPanelController: NSWindowController {
             self.appState.moveSelection(delta: delta, in: self.currentItems)
         }
         panel.onReturnAction = { [weak self] in
-            guard let self, let item = self.currentSelection else { return }
+            guard let self, !self.appState.isUpdatingResults, let item = self.currentSelection else { return }
             self.performPrimaryAction(item)
         }
         panel.onCopyAction = { [weak self] in
-            guard let self, let item = self.currentSelection else { return }
+            guard let self, !self.appState.isUpdatingResults, let item = self.currentSelection else { return }
             self.copyToClipboard(item)
         }
         panel.onDeleteAction = { [weak self] in
@@ -308,16 +425,16 @@ final class HistoryPanelController: NSWindowController {
             self.remove(item)
         }
         panel.canDeleteSelection = { [weak self] in self?.appState.searchText.isEmpty == true }
-        panel.canUndoDeletion = { [weak self] in self?.historyStore.deletedItem != nil }
+        panel.canUndoDeletion = { [weak self] in self?.historyStore.hasUndoDeletion == true }
         panel.onAlternateReturnAction = { [weak self] in
-            guard let self, let item = self.currentSelection else { return }
+            guard let self, !self.appState.isUpdatingResults, let item = self.currentSelection else { return }
             self.performPrimaryAction(item, alternate: true)
         }
         panel.onActions = { [weak self] in self?.appState.actionsPresented.toggle() }
         panel.onPin = { [weak self] in if let self, let item = self.currentSelection { self.togglePin(item) } }
         panel.onUndo = { [weak self] in self?.undoDelete() }
         panel.onNumber = { [weak self] index in
-            guard let self, self.currentItems.indices.contains(index) else { return }
+            guard let self, !self.appState.isUpdatingResults, self.currentItems.indices.contains(index) else { return }
             self.performPrimaryAction(self.currentItems[index])
         }
         panel.onJump = { [weak self] last in
@@ -330,6 +447,13 @@ final class HistoryPanelController: NSWindowController {
             let filters = HistoryFilter.allCases
             let index = filters.firstIndex(of: self.appState.selectedFilter) ?? 0
             self.appState.selectedFilter = filters[(index + (reverse ? filters.count - 1 : 1)) % filters.count]
+        }
+        panel.onSwitchMode = { [weak self] in self?.appState.switchMode() }
+        panel.onNewSnippet = { [weak self] in if self?.appState.mode == .library { self?.newSnippet() } }
+        panel.onEditSnippet = { [weak self] in
+            guard let self, self.appState.mode == .library, let id = self.currentSelection?.id,
+                  let item = self.historyStore.libraryItems.first(where: { $0.id == id && $0.type == .snippet }) else { return }
+            self.editSaved(item)
         }
     }
 
@@ -410,6 +534,9 @@ final class HistoryPanel: NSPanel {
     var onNumber: ((Int) -> Void)?
     var onJump: ((Bool) -> Void)?
     var onCycleFilter: ((Bool) -> Void)?
+    var onSwitchMode: (() -> Void)?
+    var onNewSnippet: (() -> Void)?
+    var onEditSnippet: (() -> Void)?
     var canDeleteSelection: (() -> Bool)?
     var canUndoDeletion: (() -> Bool)?
 
@@ -455,6 +582,8 @@ final class HistoryPanel: NSPanel {
                 if hasSelectedText { super.sendEvent(event) } else { onCopyAction?() }
                 return
             case "k": onActions?(); return
+            case "n": if onNewSnippet != nil { onNewSnippet?(); return }
+            case "e": if onEditSnippet != nil { onEditSnippet?(); return }
             case "z":
                 if !isEditingText, canUndoDeletion?() == true { onUndo?(); return }
             case let value?:
@@ -484,7 +613,8 @@ final class HistoryPanel: NSPanel {
             if modifiers == .command { onJump?(true) }
             else if modifiers.isEmpty { onMoveSelection?(1) } else { super.sendEvent(event) }
         case 48:
-            super.sendEvent(event)
+            if modifiers == .control || modifiers == [.control, .shift] { onSwitchMode?() }
+            else { super.sendEvent(event) }
         case 36, 76:
             if modifiers == .option {
                 if let onAlternateReturnAction { onAlternateReturnAction() } else { onCopyAction?() }

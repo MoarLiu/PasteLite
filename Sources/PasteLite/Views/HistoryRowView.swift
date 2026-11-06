@@ -8,6 +8,7 @@ struct HistoryRowView: View {
     var accent: PL.Accent = .blue
     var shortcut: Int? = nil
     var query = ""
+    var isSaved = false
 
     var body: some View {
         HStack(spacing: 10) {
@@ -31,7 +32,7 @@ struct HistoryRowView: View {
             Spacer(minLength: 2)
             VStack(alignment: .trailing, spacing: 3) {
                 if let shortcut { Text("⌘\(shortcut)").font(.system(size: 11)) }
-                if item.isPinned { Image(systemName: "pin.fill").font(.system(size: 10)) }
+                if isSaved || item.isPinned { Image(systemName: isSaved ? "star.fill" : "pin.fill").font(.system(size: 10)) }
             }.foregroundColor(isSelected ? accent.foregroundColor : .secondary)
         }
         .foregroundColor(isSelected ? accent.foregroundColor : .primary)

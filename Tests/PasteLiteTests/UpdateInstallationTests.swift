@@ -79,6 +79,28 @@ struct UpdateInstallationTests {
         }
     }
 
+    @Test(arguments: [true, false])
+    func packagedBundleInstallsOrRollsBack(launchSucceeds: Bool) async throws {
+        guard let fixture = ProcessInfo.processInfo.environment["PASTELITE_UPDATE_TEST_APP"] else { return }
+        let app = URL(fileURLWithPath: fixture)
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("PasteLitePackagedInstall-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let current = directory.appendingPathComponent("Current.app")
+        let staged = directory.appendingPathComponent("staging/PasteLite.app")
+        try FileManager.default.createDirectory(at: staged.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try FileManager.default.copyItem(at: app, to: current)
+        try FileManager.default.copyItem(at: app, to: staged)
+        try Data("current".utf8).write(to: current.appendingPathComponent("candidate-marker"))
+        try Data("replacement".utf8).write(to: staged.appendingPathComponent("candidate-marker"))
+        let process = try ReleaseInstaller.launchInstaller(staged: staged, current: current, parentPID: .max,
+            opener: URL(fileURLWithPath: launchSucceeds ? "/usr/bin/true" : "/usr/bin/false"))
+        #expect(await wait(process) == (launchSucceeds ? 0 : 1))
+        #expect(try String(contentsOf: current.appendingPathComponent("candidate-marker")) == (launchSucceeds ? "replacement" : "current"))
+        #expect(Bundle(url: current)?.bundleIdentifier == "com.xia.PasteLite")
+        #expect(Bundle(url: current)?.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String == AppInfo.fallbackVersion)
+        #expect(!FileManager.default.fileExists(atPath: current.path + ".previous"))
+    }
+
     private func wait(_ process: Process) async -> Int32 {
         for _ in 0..<1000 {
             if !process.isRunning { return process.terminationStatus }

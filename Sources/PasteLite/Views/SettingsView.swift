@@ -11,6 +11,7 @@ struct SettingsView: View {
     @State private var trusted = AccessibilityService.isTrusted()
     @State private var storageBytes: Int64 = 0
     @State private var showClearConfirmation = false
+    @State private var showClearLibraryConfirmation = false
     @State private var advanced = false
     @State private var operationMessage: String?
     private let refresh = Timer.publish(every: 2, on: .main, in: .common).autoconnect()
@@ -56,7 +57,11 @@ struct SettingsView: View {
             Button("Clear History", role: .destructive) {
                 Task { report(await historyStore.clear()); refreshStorage() }
             }
-        } message: { Text("Delete \(historyStore.items.filter { !$0.isPinned }.count) items? Pinned items will be kept. This cannot be undone.") }
+        } message: { Text("Delete \(historyStore.items.filter { !$0.isPinned }.count) history items? Saved items and protected legacy pins will be kept. This cannot be undone.") }
+        .alert("Clear Saved Library?", isPresented: $showClearLibraryConfirmation) {
+            Button("Cancel", role: .cancel) {}
+            Button("Clear Saved Library", role: .destructive) { Task { report(await historyStore.clearLibrary()); refreshStorage() } }
+        } message: { Text("Delete \(historyStore.libraryItems.count) saved items, snippets, and all custom groups? History will be kept. This cannot be undone.") }
     }
 
     private var general: some View {
@@ -127,7 +132,7 @@ struct SettingsView: View {
                     HStack(alignment: .firstTextBaseline) {
                         Text(ByteCountFormatter.string(fromByteCount: storageBytes, countStyle: .file)).font(.system(size: 28, weight: .semibold))
                         Spacer()
-                        Text("\(historyStore.items.count) items · \(historyStore.items.filter(\.isPinned).count) pinned").foregroundStyle(.secondary)
+                        Text("\(historyStore.items.count) history items").foregroundStyle(.secondary)
                     }
                     GeometryReader { geometry in
                         HStack(spacing: 0) {
@@ -153,10 +158,25 @@ struct SettingsView: View {
                     }
                 }.padding(16)
                 Divider()
-                row("History limit", detail: "Oldest unpinned items are removed first") {
+                row("History limit", detail: "Saved items do not count toward this limit") {
                     Picker("History limit", selection: $preferences.historyLimit) {
                         ForEach(Array(Set([100, 250, 500, 1000, 2500, 5000, preferences.historyLimit])).sorted(), id: \.self) { Text("\($0) items").tag($0) }
                     }.labelsHidden().frame(width: 135)
+                }
+            }
+            group("Saved Library") {
+                row("Saved items", detail: "\(historyStore.libraryGroups.count) custom groups · Stored independently of history") {
+                    Text("\(historyStore.libraryItems.count) items").font(.system(size: 12)).foregroundStyle(.secondary)
+                }
+                Divider()
+                row("Saved content size") {
+                    Text(ByteCountFormatter.string(fromByteCount: Int64(historyStore.libraryItems.reduce(0) { $0 + $1.content.assetByteCount }), countStyle: .file))
+                        .font(.system(size: 12)).foregroundStyle(.secondary)
+                }
+                Divider()
+                row("Clear saved library", detail: "Deletes saved items, snippets, and groups; history is kept") {
+                    Button("Clear Saved…", role: .destructive) { showClearLibraryConfirmation = true }
+                        .disabled(historyStore.libraryItems.isEmpty && historyStore.libraryGroups.isEmpty)
                 }
             }
             group("Database") {
@@ -166,7 +186,7 @@ struct SettingsView: View {
                 }.frame(maxWidth: .infinity, alignment: .leading).padding(14)
             }
             group("Manage History") {
-                row("Clear clipboard history", detail: "Pinned items will be kept") {
+                row("Clear clipboard history", detail: "Saved items and protected legacy pins will be kept") {
                     Button("Clear History…", role: .destructive) { showClearConfirmation = true }.disabled(historyStore.items.allSatisfy(\.isPinned))
                 }
             }
@@ -221,7 +241,7 @@ struct SettingsView: View {
                 }
             }
             group("When PasteLite Quits") {
-                row("Clear history on quit", detail: "Deletes all items, including pinned items") {
+                row("Clear all data on quit", detail: "Deletes history, saved items, snippets, and groups") {
                     Toggle("Clear history on quit", isOn: $preferences.clearOnQuit).labelsHidden().toggleStyle(.switch)
                 }
             }

@@ -54,6 +54,7 @@ final class AppPreferences: ObservableObject {
     @Published var updateChannel: UpdateChannel { didSet { save(updateChannel.rawValue, "updateChannel") } }
     @Published var updateEndpoint: String { didSet { save(updateEndpoint, "updateEndpoint") } }
     @Published var settingsPage: SettingsPage = .general
+    @Published var lastLibraryGroup: String { didSet { save(lastLibraryGroup, "lastLibraryGroup") } }
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
@@ -74,6 +75,7 @@ final class AppPreferences: ObservableObject {
         automaticDownloads = defaults.bool(forKey: "design.automaticDownloads")
         updateChannel = UpdateChannel(rawValue: value("updateChannel")) ?? .stable
         updateEndpoint = value("updateEndpoint")
+        lastLibraryGroup = value("lastLibraryGroup")
     }
 
     private func save(_ value: Any, _ key: String) { defaults.set(value, forKey: "design.\(key)") }

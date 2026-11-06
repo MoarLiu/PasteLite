@@ -35,9 +35,12 @@ def main():
             with sqlite3.connect(database) as connection:
                 items = connection.execute("SELECT COUNT(*) FROM history_items").fetchone()[0]
                 assets = connection.execute("SELECT COUNT(*) FROM history_assets").fetchone()[0]
-            if items or assets:
-                raise RuntimeError(f"Quit left {items} history items and {assets} attachments.")
-            print("PASS: repeated quit waited for history and attachment clearing.")
+                saved = connection.execute("SELECT COUNT(*) FROM library_items").fetchone()[0]
+                saved_assets = connection.execute("SELECT COUNT(*) FROM library_assets").fetchone()[0]
+                groups = connection.execute("SELECT COUNT(*) FROM library_groups").fetchone()[0]
+            if items or assets or saved or saved_assets or groups:
+                raise RuntimeError(f"Quit left data: {items} history, {assets} history assets, {saved} saved, {saved_assets} saved assets, {groups} groups.")
+            print("PASS: repeated quit waited for history, saved items, groups, and attachment clearing.")
         finally:
             if process.poll() is None:
                 process.kill()

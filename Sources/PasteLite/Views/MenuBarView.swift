@@ -48,9 +48,11 @@ struct MenuBarView: View {
             }
             Divider().padding(.horizontal, 8).padding(.vertical, 5)
             menuButton("Settings…", symbol: "gearshape", shortcut: "⌘ ,", action: onSettings)
+                .keyboardShortcut(",", modifiers: .command)
             menuButton("Check for Updates…", symbol: "arrow.triangle.2.circlepath", shortcut: AppInfo.version, action: onUpdates)
             Divider().padding(.horizontal, 8).padding(.vertical, 5)
             menuButton("Quit PasteLite", symbol: "power", shortcut: "⌘ Q", action: onQuit)
+                .keyboardShortcut("q", modifiers: .command)
         }
         .padding(5).frame(width: 312)
         .background(VisualEffect(material: .menu))

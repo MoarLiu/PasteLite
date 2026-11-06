@@ -25,7 +25,7 @@ enum ClipboardKind: String, CaseIterable, Codable, Identifiable, Sendable {
     }
 }
 
-enum HistoryFilter: String, CaseIterable, Identifiable {
+enum HistoryFilter: String, CaseIterable, Identifiable, Sendable {
     case all
     case pinned
     case text
@@ -35,6 +35,8 @@ enum HistoryFilter: String, CaseIterable, Identifiable {
     case color
 
     var id: String { rawValue }
+
+    static var contentFilters: [HistoryFilter] { allCases.filter { $0 != .pinned } }
 
     var title: String {
         switch self {
@@ -71,6 +73,8 @@ struct ClipboardItem: Identifiable, Hashable, Sendable {
     var isPinned: Bool = false
     var useCount: Int = 0
     var storedByteCount: Int = 0
+    var origin: ClipboardOrigin = .history
+    var contentRevision: Int = 0
 
     init(
         id: UUID = UUID(),
@@ -111,6 +115,10 @@ struct ClipboardItem: Identifiable, Hashable, Sendable {
         item.hasLoadedAssets = false
         return item
     }
+}
+
+enum ClipboardOrigin: String, Codable, Sendable {
+    case history, library
 }
 
 extension ClipboardKind {

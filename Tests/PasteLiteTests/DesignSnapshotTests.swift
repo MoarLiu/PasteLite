@@ -32,6 +32,20 @@ struct DesignSnapshotTests {
             state.searchText = ""
             state.normalizeSelection(in: state.filteredItems(in: store.items))
             try await render(panel, name: "history-\(theme.rawValue)", size: NSSize(width: 880, height: 560), output: outputURL)
+            state.mode = .library
+            state.refreshResults(history: store.items, library: store.libraryItems, groups: store.libraryGroups)
+            try await resultsReady(state)
+            try await render(panel, name: "library-\(theme.rawValue)", size: NSSize(width: 880, height: 560), output: outputURL)
+            prefs.showPreview = false
+            try await render(panel, name: "library-compact-\(theme.rawValue)", size: NSSize(width: 520, height: 560), output: outputURL)
+            prefs.showPreview = true
+            let editor = LibraryDraft(type: .snippet, name: "需求整理", body: "请整理以下需求：\n\n1. 用户场景\n2. 功能范围\n3. 验收标准", kind: .text, generation: store.libraryGeneration)
+            let editorState = AppState()
+            editorState.beginEditing(editor)
+            try await render(SnippetEditorView(appState: editorState, store: store, initial: editor),
+                             name: "snippet-editor-\(theme.rawValue)", size: NSSize(width: 480, height: 460), output: outputURL)
+            state.mode = .history
+            try await resultsReady(state)
             for page in SettingsPage.allCases {
                 prefs.settingsPage = page
                 try await render(SettingsView(), name: "settings-\(page.rawValue)-\(theme.rawValue)", size: NSSize(width: 600, height: 680), output: outputURL)
